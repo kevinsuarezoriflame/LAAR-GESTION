@@ -287,7 +287,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
   </div>
 
   <div class="panel dash-filters">
-    <div class="field"><label>Mes</label><select id="dMes"><option value="">Todos</option></select></div>
+    <div class="field"><label>Mes activo</label><select id="dMes"></select></div>
     <div class="field"><label>Canal</label><select id="dCanal"><option value="">Todos</option><option>PUP</option><option>SPO</option><option>HD</option></select></div>
     <div class="field"><label>Estado</label><select id="dEstado"><option value="">Todos</option><option>Entregado</option><option>No entregado</option></select></div>
     <div class="field"><label>Clasificación / Claims</label><select id="dClass"><option value="">Todas</option></select></div>
@@ -329,7 +329,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 <section id="pedidos" class="page active pedidos-page">
   <div class="topbar"><div class="title"><h1>Pedidos</h1></div></div>
   <div class="panel filters">
-    <div class="field"><label>Mes</label><select id="pMes"><option value="">Todos</option></select></div>
+    <div class="field"><label>Mes activo</label><select id="pMes"></select></div>
     <div class="field"><label>Canal</label><select id="pCanal"><option value="">Todos</option><option>PUP</option><option>SPO</option><option>HD</option></select></div>
     <div class="field"><label>Estado</label><select id="pEstado"><option value="">Todos</option><option>Entregado</option><option>No entregado</option><option>Pendiente</option></select></div>
     <div class="field"><label>Clasificación</label><select id="pClass"><option value="">Todas</option></select></div>
@@ -998,6 +998,12 @@ function renderSelects(){
     e.innerHTML='<option value="">Todas</option>'+db.classes.map(c=>`<option>${escapeHtml(c)}</option>`).join('');
     if([...e.options].some(o=>o.value===v))e.value=v;
   });
+
+  const active=getActiveWorkMonth();
+  ['dMes','pMes'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && active && [...el.options].some(o=>o.value===active))el.value=active;
+  });
 }
 function renderConfig(){
   const cl=document.getElementById('classList');
@@ -1299,6 +1305,29 @@ function deliveryTimeLabel(o){
   return 'Más de 72hrs';
 }
 
+
+let activeWorkMonth='';
+
+function availableActiveMonths(){
+  return [...new Set(Object.values(db.orders).map(o=>o.mes).filter(Boolean))].sort().reverse();
+}
+function getActiveWorkMonth(){
+  const months=availableActiveMonths();
+  if(activeWorkMonth && months.includes(activeWorkMonth))return activeWorkMonth;
+  activeWorkMonth=months[0]||'';
+  return activeWorkMonth;
+}
+function setActiveWorkMonth(month){
+  const months=availableActiveMonths();
+  activeWorkMonth=(month && months.includes(month))?month:(months[0]||'');
+  ['dMes','pMes'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el && [...el.options].some(o=>o.value===activeWorkMonth)) el.value=activeWorkMonth;
+  });
+  activeDashboardSource='current';
+  renderAll();
+}
+
 let activeDashboardSource='current';
 let dailyOrdersChartInstance=null;
 if(window.Chart && window.ChartDataLabels){
@@ -1306,8 +1335,7 @@ if(window.Chart && window.ChartDataLabels){
 }
 
 function currentMonthKey(){
-  const months=[...new Set(Object.values(db.orders).map(o=>o.mes).filter(Boolean))].sort().reverse();
-  return months[0]||'';
+  return getActiveWorkMonth();
 }
 
 function snapshotFromRows(rows,monthKey=''){
@@ -1318,14 +1346,14 @@ function snapshotFromRows(rows,monthKey=''){
 }
 function snapshotFromOrders(monthKey){return snapshotFromRows(Object.values(db.orders).filter(o=>!monthKey||o.mes===monthKey),monthKey);}
 
-function dashboardCurrentSnapshot(){if(activeDashboardSource==='current')return snapshotFromRows(dashboardRows(),document.getElementById('dMes')?.value||currentMonthKey());return db.snapshots?.[activeDashboardSource]||null;}
+function dashboardCurrentSnapshot(){if(activeDashboardSource==='current')return snapshotFromRows(dashboardRows(),getActiveWorkMonth());return db.snapshots?.[activeDashboardSource]||null;}
 
 function renderDashboardMonthSelector(){
   const sel=document.getElementById('dashboardMonthSelect');
   const closeBtn=document.getElementById('closeMonthBtn');
   if(!sel)return;
 
-  const current=currentMonthKey();
+  const current=getActiveWorkMonth();
   const old=activeDashboardSource;
   let html='';
 
@@ -1350,27 +1378,41 @@ function renderDashboardMonthSelector(){
     closeBtn.disabled=!current || activeDashboardSource!=='current';
     closeBtn.style.opacity=closeBtn.disabled?'.5':'1';
   }
-  ['dMes','dCanal','dEstado','dClass','clearDashFilters'].forEach(id=>{const e=document.getElementById(id);if(e)e.disabled=activeDashboardSource!=='current';});
+  ['dCanal','dEstado','dClass','clearDashFilters'].forEach(id=>{const e=document.getElementById(id);if(e)e.disabled=activeDashboardSource!=='current';});
 }
 
 function closeCurrentMonth(){
-  const mk=currentMonthKey();
-  if(!mk)return toast('No hay un mes activo para cerrar.');
+  const mk=getActiveWorkMonth();
+  if(!mk)return toast('No hay un mes seleccionado para cerrar.');
 
-  const snap=snapshotFromOrders(mk);
-  if(!snap.total)return toast('El mes activo no tiene pedidos.');
+  const monthOrders=Object.values(db.orders).filter(o=>o.mes===mk);
+  const snap=snapshotFromRows(monthOrders,mk);
+  if(!snap.total)return toast('El mes seleccionado no tiene pedidos.');
 
-  if(!confirm(`Se guardarán únicamente los resultados de ${displayMonth(mk)} y se eliminarán sus pedidos de la base activa. ¿Cerrar mes?`))return;
+  const pending=monthOrders.filter(o=>!isDelivered(o));
+  let msg=`Se guardarán únicamente los resultados de ${displayMonth(mk)} y se eliminarán sus ${snap.total.toLocaleString('es-EC')} pedidos de la base activa.`;
+  if(pending.length){
+    msg+=`\n\n⚠ ${displayMonth(mk)} todavía tiene ${pending.length.toLocaleString('es-EC')} pedido(s) NO ENTREGADO(S) o pendiente(s) de gestión.`;
+    msg+=`\n\n¿Deseas cerrar el mes de todas formas?`;
+  }else{
+    msg+=`\n\nTodos los pedidos están entregados. ¿Cerrar mes?`;
+  }
+  if(!confirm(msg))return;
 
   db.snapshots=db.snapshots||{};
-  db.snapshots[mk]=snap;const idsToDelete=Object.keys(db.orders).filter(id=>db.orders[id]?.mes===mk);Object.keys(db.orders).forEach(id=>{if(db.orders[id]?.mes===mk)delete db.orders[id];});cloudSaveSnapshot(mk,snap);cloudDeleteOrders(idsToDelete);
+  db.snapshots[mk]=snap;
+  const idsToDelete=Object.keys(db.orders).filter(id=>db.orders[id]?.mes===mk);
+  idsToDelete.forEach(id=>delete db.orders[id]);
 
-  // limpiamos marcadores de cargas porque empieza un nuevo ciclo
+  cloudSaveSnapshot(mk,snap);
+  cloudDeleteOrders(idsToDelete);
+
   db.processed={};
   activeDashboardSource=mk;
+  activeWorkMonth='';
   safeSet(STORAGE_KEY,JSON.stringify(db));
   renderAll();
-  toast(`${displayMonth(mk)} cerrado. Se guardaron solo los resultados del Dashboard.`);
+  toast(`${displayMonth(mk)} cerrado. Sus pedidos fueron retirados de la base activa y se conservaron sus resultados.`);
 }
 
 function renderDailyOrdersChart(){
@@ -1428,7 +1470,7 @@ function renderDailyOrdersChart(){
 }
 
 function dashboardRows(){
-  const mes=dMes?.value||'', canal=dCanal?.value||'', estado=dEstado?.value||'', cls=dClass?.value||'';
+  const mes=getActiveWorkMonth(), canal=dCanal?.value||'', estado=dEstado?.value||'', cls=dClass?.value||'';
   return Object.values(db.orders).filter(o=>
     (!mes||o.mes===mes)&&
     (!canal||o.canal===canal)&&
@@ -1581,7 +1623,8 @@ function buildLaarAddress(o){
 function dateForExcel(v){const d=parseDate(v);return d||'';}
 
 function generatorAvailableDates(){
-  const vals=[...new Set(Object.values(db.orders).map(o=>norm(o.fechaGuia)).filter(Boolean))];
+  const month=getActiveWorkMonth();
+  const vals=[...new Set(Object.values(db.orders).filter(o=>!month||o.mes===month).map(o=>norm(o.fechaGuia)).filter(Boolean))];
   return vals.sort((a,b)=>{
     const da=parseDate(a),dbb=parseDate(b);
     return (dbb?.getTime()||0)-(da?.getTime()||0);
@@ -1880,12 +1923,16 @@ E('dailyChartModal')?.addEventListener('click',e=>{if(e.target===E('dailyChartMo
 E('exportOrdersExcel')?.addEventListener('click',exportOrdersToExcel);
 
 E('dashboardMonthSelect')?.addEventListener('change',()=>{
-  activeDashboardSource=E('dashboardMonthSelect').value||'current';if(activeDashboardSource!=='current'){['dMes','dCanal','dEstado','dClass'].forEach(id=>{if(E(id))E(id).value='';});}renderDashboard();
+  activeDashboardSource=E('dashboardMonthSelect').value||'current';if(activeDashboardSource!=='current'){['dCanal','dEstado','dClass'].forEach(id=>{if(E(id))E(id).value='';});}renderDashboard();
 });
 E('closeMonthBtn')?.addEventListener('click',closeCurrentMonth);
 
+E('dMes')?.addEventListener('change',()=>setActiveWorkMonth(E('dMes').value));
+E('pMes')?.addEventListener('change',()=>setActiveWorkMonth(E('pMes').value));
+
+
 E('clearDashFilters')?.addEventListener('click',()=>{
-  ['dMes','dCanal','dEstado','dClass'].forEach(id=>{if(E(id))E(id).value='';});
+  ['dCanal','dEstado','dClass'].forEach(id=>{if(E(id))E(id).value='';});
   renderDashboard();
 });
 
