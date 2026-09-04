@@ -249,6 +249,32 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 #config .config-grid > .config-card{min-width:0}
 #config .config-grid > .config-card:last-child{margin-bottom:18px}
 
+
+
+/* ===== Columnas fijas en PEDIDOS =====
+   NO GUIA | FECHA | COD DISTR. | NOMBRE DESTINATARIO
+*/
+#ordersGrid table th:nth-child(1), #ordersGrid table td:nth-child(1){position:sticky;left:0;width:86px;min-width:86px;max-width:86px}
+#ordersGrid table th:nth-child(2), #ordersGrid table td:nth-child(2){position:sticky;left:86px;width:72px;min-width:72px;max-width:72px}
+#ordersGrid table th:nth-child(3), #ordersGrid table td:nth-child(3){position:sticky;left:158px;width:76px;min-width:76px;max-width:76px}
+#ordersGrid table th:nth-child(4), #ordersGrid table td:nth-child(4){position:sticky;left:234px;width:190px;min-width:190px;max-width:190px}
+
+#ordersGrid table td:nth-child(-n+4){
+  background:#fff;
+  z-index:3;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+#ordersGrid table th:nth-child(-n+4){
+  background:#fafbfb;
+  z-index:7;
+}
+#ordersGrid table th:nth-child(4),
+#ordersGrid table td:nth-child(4){
+  box-shadow:5px 0 7px -6px rgba(0,0,0,.45);
+}
+#ordersGrid tbody tr:hover td:nth-child(-n+4){background:#fffbea}
+
 </style>
 </head>
 <body>
@@ -1011,8 +1037,8 @@ function gridHTML(rows){
   <th>NOMBRE DESTINATARIO</th>
   <th>DIRECCION ENVIO</th>
   <th>REFERENCIA</th>
+  <th>CELULAR</th>
   <th>BARRIO</th>
-  <th>TELEFONO 1</th>
   <th>NUMERO DE ORDEN</th>
   <th>CIUDAD</th>
   <th>PESO</th>
@@ -1033,8 +1059,8 @@ function gridHTML(rows){
   <td class="agency-cell">${agencyCellHTML(o)}</td>
   <td>${escapeHtml(o.direccion||'')}</td>
   <td>${escapeHtml(o.referencia||'')}</td>
-  <td>${escapeHtml(o.barrio||'')}</td>
   <td>${escapeHtml(o.celular||'')}</td>
+  <td>${escapeHtml(o.barrio||'')}</td>
   <td>${escapeHtml(o.pedido||'')}</td>
   <td>${escapeHtml(o.ciudad||'')}</td>
   <td>${escapeHtml(o.peso||'')}</td>
@@ -1727,7 +1753,10 @@ function buildLaarAddress(o){
   if(norm(o.barrio))parts.push(norm(o.barrio));
   if(norm(o.direccion))parts.push(norm(o.direccion));
   let out=parts.join(' - ');
-  if(norm(o.referencia))out+=(out?' - ':'')+'REF: '+norm(o.referencia);
+  const ref=norm(o.referencia);
+  if(ref && !normalizeKey(out).includes(normalizeKey(ref))){
+    out+=(out?' - ':'')+'REF: '+ref;
+  }
   return out;
 }
 function dateForExcel(v){const d=parseDate(v);return d||'';}
