@@ -1755,7 +1755,7 @@ function buildLaarAddress(o){
   let out=parts.join(' - ');
   const ref=norm(o.referencia);
   if(ref && !normalizeKey(out).includes(normalizeKey(ref))){
-    out+=(out?' - ':'')+'REF: '+ref;
+    out+=(out?' - ':'')+ref;
   }
   return out;
 }
