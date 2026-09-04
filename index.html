@@ -333,8 +333,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
     <div class="field"><label>Canal</label><select id="pCanal"><option value="">Todos</option><option>PUP</option><option>SPO</option><option>HD</option></select></div>
     <div class="field"><label>Estado</label><select id="pEstado"><option value="">Todos</option><option>Entregado</option><option>No entregado</option><option>Pendiente</option></select></div>
     <div class="field"><label>Clasificación</label><select id="pClass"><option value="">Todas</option></select></div>
-    <div class="field"><label>Responsable general</label><input id="bulkResponsible2" placeholder="Nombre"></div>
-    <button class="primary" id="applyResponsible2">Aplicar a toda la base</button>
+    <div class="field"><label>Fecha de entrega</label><input type="date" id="pDeliveryDate"></div>
     <button class="secondary" id="sortPendingFirst" title="Mostrar primero los pedidos que aún no están entregados">No entregados primero</button>
     <button class="secondary" id="copyPendingGuides" title="Copiar todas las guías que aún no están entregadas">Copiar guías pendientes</button>
     <input class="search" id="search2" placeholder="Buscar guía / pedido">
@@ -601,9 +600,86 @@ async function loadCloudOnce(){
   if(configSnap.exists){const c=configSnap.data()||{};if(Array.isArray(c.classes))db.classes=c.classes;if(Array.isArray(c.responsibles))db.responsibles=c.responsibles;if(Array.isArray(c.ruleHistory))db.ruleHistory=c.ruleHistory;if(Array.isArray(c.provinceMap))db.provinceMap=c.provinceMap;}
   safeSet(STORAGE_KEY,JSON.stringify(db));renderAll();
 }
+
+function captureCurrentView(){
+  const grid=document.querySelector('#ordersGrid .table-scroll');
+  const page=document.getElementById('pedidos');
+  return {
+    windowX:window.scrollX||0,
+    windowY:window.scrollY||0,
+    gridLeft:grid?.scrollLeft||0,
+    gridTop:grid?.scrollTop||0,
+    pageLeft:page?.scrollLeft||0,
+    pageTop:page?.scrollTop||0,
+    activePage:document.querySelector('.nav button.active')?.dataset.page||'pedidos'
+  };
+}
+function restoreCurrentView(pos){
+  if(!pos)return;
+  const restore=()=>{
+    const grid=document.querySelector('#ordersGrid .table-scroll');
+    const page=document.getElementById('pedidos');
+    if(grid){
+      grid.scrollLeft=pos.gridLeft||0;
+      grid.scrollTop=pos.gridTop||0;
+    }
+    if(page){
+      page.scrollLeft=pos.pageLeft||0;
+      page.scrollTop=pos.pageTop||0;
+    }
+    window.scrollTo(pos.windowX||0,pos.windowY||0);
+  };
+  // Se restaura después de que el DOM termine de dibujar la tabla.
+  requestAnimationFrame(()=>{
+    restore();
+    requestAnimationFrame(restore);
+  });
+}
+function renderAllKeepingPosition(){
+  const pos=captureCurrentView();
+  renderAll();
+  restoreCurrentView(pos);
+}
+
+
+const pendingOrderEdits=new Map();
+
+function pendingEditKey(id,field){return `${id}::${field}`;}
+function rememberPendingEdit(id,field,value){
+  pendingOrderEdits.set(pendingEditKey(id,field),{id,field,value,at:Date.now()});
+}
+function mergePendingEditsIntoOrder(id,order){
+  if(!order)return order;
+  for(const [key,p] of pendingOrderEdits){
+    if(p.id!==id)continue;
+    const incoming=order[p.field]??'';
+    if(String(incoming)===String(p.value)){
+      pendingOrderEdits.delete(key); // Firebase ya confirmó el valor.
+    }else if(Date.now()-p.at<15000){
+      // Durante unos segundos protegemos la edición local para que
+      // un snapshot atrasado no haga "desaparecer" la selección.
+      order[p.field]=p.value;
+    }else{
+      pendingOrderEdits.delete(key);
+    }
+  }
+  return order;
+}
+
 function startCloudListeners(){
   if(!firebaseReady||cloudSyncStarted)return;cloudSyncStarted=true;
-  firestore.collection('pedidos').onSnapshot(s=>{const next={};s.forEach(d=>next[d.id]=d.data());db.orders=next;safeSet(STORAGE_KEY,JSON.stringify(db));renderAll();},e=>console.error('Pedidos listener',e));
+  firestore.collection('pedidos').onSnapshot(s=>{
+    const pos=captureCurrentView();
+    const next={};
+    s.forEach(d=>{
+      const data=d.data();
+      next[d.id]=mergePendingEditsIntoOrder(d.id,data);
+    });
+    db.orders=next;
+    safeSet(STORAGE_KEY,JSON.stringify(db));
+    renderAll();
+    restoreCurrentView(pos);
+  },e=>console.error('Pedidos listener',e));
   firestore.collection('snapshots').onSnapshot(s=>{const next={};s.forEach(d=>next[d.id]=d.data());db.snapshots=next;safeSet(STORAGE_KEY,JSON.stringify(db));renderDashboardMonthSelector();renderDashboard();},e=>console.error('Snapshots listener',e));
 }
 async function cloudWriteOrders(ids){
@@ -864,17 +940,24 @@ async function ingestTc(){
   let rows=parseTSV(document.getElementById('txtTc').value);if(!rows.length)return toast('No hay datos para procesar.');
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('WAYBILL_NUMBER'))objs=toObj(rows);else objs=rows.map(r=>({WAYBILL_NUMBER:cleanCell(r[21]??''),SOCIO:cleanCell(r[31]??''),NOMBRE_SOCIO:cleanCell(r[32]??''),TELEFONO_SOCIO:cleanCell(r[33]??''),REFERENCIAS:cleanCell(r[43]??'')}));
-  let reviewed=0,found=0,updated=0,ignored=0,missing=0,lockedDelivered=0;const changedIds=[];
+  let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[];
   for(const r of objs){
     reviewed++;const guia=norm(r['WAYBILL_NUMBER']);if(!guia){if(reviewed%750===0)await yieldUI();continue}
     const o=db.orders[guia];if(!o){missing++;if(reviewed%750===0)await yieldUI();continue}found++;
-    if(isDelivered(o)){lockedDelivered++;if(reviewed%750===0)await yieldUI();continue}
     const incoming={socio:norm(r['SOCIO']),nombreSocio:norm(r['NOMBRE_SOCIO']),celular:norm(r['TELEFONO_SOCIO']),referencia:norm(r['REFERENCIAS'])};
     if(o.socio&&o.nombreSocio&&o.celular&&o.referencia){ignored++;if(reviewed%750===0)await yieldUI();continue}
-    let changed=false;for(const k of ['socio','nombreSocio','celular','referencia']){if(!o[k]&&incoming[k]){o[k]=incoming[k];changed=true}}
-    if(changed){updated++;changedIds.push(guia)}else ignored++;if(reviewed%750===0)await yieldUI();
+    let changed=false;
+    for(const k of ['socio','nombreSocio','celular','referencia']){
+      if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];changed=true}
+    }
+    if(changed){
+      updated++;
+      if(isDelivered(o))deliveredCompleted++;
+      changedIds.push(guia);
+    }else ignored++;
+    if(reviewed%750===0)await yieldUI();
   }
-  markProcessed('tc',updated,`${reviewed} filas revisadas · ${found} guías encontradas · ${ignored} ya completas/sin cambios · ${updated} actualizadas · ${lockedDelivered} entregados protegidos · ${missing} sin coincidencia`);
+  markProcessed('tc',updated,`${reviewed} filas revisadas · ${found} guías encontradas · ${ignored} ya completas/sin cambios · ${updated} actualizadas · ${deliveredCompleted} entregados completados sin sobreescribir · ${missing} sin coincidencia`);
   saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} actualizadas · ${ignored} ignoradas.`);
 }
 let pendingFirst=false;
@@ -883,15 +966,22 @@ function getFiltered(prefix=''){
         canal=document.getElementById(prefix+'Canal')?.value||'',
         estado=document.getElementById(prefix+'Estado')?.value||'',
         cls=document.getElementById(prefix+'Class')?.value||'',
+        deliveryDate=prefix==='p'?(document.getElementById('pDeliveryDate')?.value||''):'',
         q=(document.getElementById(prefix==='p'?'search2':'search')?.value||'').toLowerCase();
 
-  let rows=Object.values(db.orders).filter(o=>
-    (!mes||o.mes===mes) &&
-    (!canal||o.canal===canal) &&
-    (!estado||(estado==='Entregado'?isDelivered(o):estado==='No entregado'?isNotDelivered(o):deriveStatus(o)===estado)) &&
-    (!cls||o.clasificacion===cls) &&
-    (!q||[o.guia,o.pedido,o.socio,o.nombreSocio,o.destinatario].join(' ').toLowerCase().includes(q))
-  );
+  let rows=Object.values(db.orders).filter(o=>{
+    let deliveryKey='';
+    const fd=parseDate(o.fechaEntrega);
+    if(fd)deliveryKey=`${fd.getFullYear()}-${String(fd.getMonth()+1).padStart(2,'0')}-${String(fd.getDate()).padStart(2,'0')}`;
+    return (
+      (!mes||o.mes===mes) &&
+      (!canal||o.canal===canal) &&
+      (!estado||(estado==='Entregado'?isDelivered(o):estado==='No entregado'?isNotDelivered(o):deriveStatus(o)===estado)) &&
+      (!cls||o.clasificacion===cls) &&
+      (!deliveryDate||deliveryKey===deliveryDate) &&
+      (!q||[o.guia,o.pedido,o.socio,o.nombreSocio,o.destinatario,o.referencia,o.celular].join(' ').toLowerCase().includes(q))
+    );
+  });
 
   if(prefix==='p' && pendingFirst){
     rows.sort((a,b)=>{
@@ -930,8 +1020,9 @@ function gridHTML(rows){
   <th>Promesa de Entrega</th>
   <th>COURIER</th>
   <th>CANAL</th>
-  <th>FECHA</th>
-  <th>NOVEDADES</th>
+  <th>FECHA ENTREGA</th>
+  <th>ESTADO LAAR</th>
+  <th>FECHA ESTADO</th>
   <th>DÍAS</th>
   <th>GESTION</th>
   <th>CLASIFICACION/CLAIMS</th>
@@ -952,16 +1043,24 @@ function gridHTML(rows){
   <td>${escapeHtml(o.courier||'LAAR')}</td>
   <td><span class="badge b-${(o.canal||'hd').toLowerCase()}">${escapeHtml(o.canal||'')}</span></td>
   <td>${escapeHtml(fmtDate(parseDate(o.fechaEntrega))||'')}</td>
-  <td><span class="badge ${statusBadgeClass(o)}">${escapeHtml(o.novedadLaar||'')}</span></td>
+  <td><span class="badge ${statusBadgeClass(o)}">${escapeHtml(o.estadoLaar||'')}</span></td>
+  <td>${escapeHtml(fmtDate(parseDate(o.fechaEstado))||o.fechaEstado||'')}</td>
   <td>${o.dias??''}</td>
   <td class="editable comment-cell"><input class="comment-input" data-comment="1" data-edit="gestion" data-id="${o.guia}" value="${escapeHtml(o.gestion||'')}" placeholder="Comentario" title=""></td>
-  <td class="editable"><select data-edit="clasificacion" data-id="${o.guia}"><option value=""></option>${db.classes.map(c=>`<option ${o.clasificacion===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select></td>
+  <td class="editable"><select data-edit="clasificacion" data-id="${o.guia}"><option value=""></option>${db.classes.map(c=>`<option value="${escapeHtml(c)}" ${o.clasificacion===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select></td>
   </tr>`).join('')}</tbody></table></div></div>`
 }
 function escapeHtml(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function renderGrids(){
+  const ogOld=document.querySelector('#ordersGrid .table-scroll');
+  const keepLeft=ogOld?.scrollLeft||0, keepTop=ogOld?.scrollTop||0;
   const hg=document.getElementById('homeGrid'); if(hg)hg.innerHTML=gridHTML(getFiltered('f'));
   const og=document.getElementById('ordersGrid'); if(og)og.innerHTML=gridHTML(getFiltered('p'));
+  const ogNew=document.querySelector('#ordersGrid .table-scroll');
+  if(ogNew){
+    ogNew.scrollLeft=keepLeft;
+    ogNew.scrollTop=keepTop;
+  }
 }
 function renderKPIs(){
   const a=Object.values(db.orders), total=a.length;
@@ -1241,7 +1340,9 @@ commentEditorSave.onclick=()=>{
 
     // Actualizamos solamente la celda que se editó.
     // Así no se pierde posición vertical, horizontal ni fila actual.
-    if(activeCommentInput){activeCommentInput.value=value;}cloudWriteOrders([activeCommentId]);
+    if(activeCommentInput){activeCommentInput.value=value;}
+    const savedView=captureCurrentView();
+    cloudWriteOrders([activeCommentId]).finally(()=>restoreCurrentView(savedView));
   }
 
   closeCommentEditor();
@@ -1814,7 +1915,17 @@ function applyResponsible(name){
   if(!db.responsibles.includes(name))db.responsibles.push(name);
   Object.values(db.orders).forEach(o=>o.responsable=name);saveDB();toast(`Responsable "${name}" aplicado a toda la base.`)
 }
-function removeClass(i){db.classes.splice(i,1);saveDB();cloudSaveConfig()}
+function removeClass(i){
+  if(!Number.isInteger(i)||i<0||i>=db.classes.length)return;
+  const removed=db.classes[i];
+  if(!confirm(`¿Quitar "${removed}" de Clasificación / Claims?`))return;
+  db.classes.splice(i,1);
+  safeSet(STORAGE_KEY,JSON.stringify(db));
+  renderConfig();
+  renderSelects();
+  cloudSaveConfig().catch(err=>console.error('Guardar Claims en Firebase:',err));
+  toast('Clasificación / Claim eliminada.');
+}
 function removeResponsible(i){db.responsibles.splice(i,1);saveDB();cloudSaveConfig()}
 document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));document.getElementById(b.dataset.page).classList.add('active')});
 document.querySelectorAll('.paste-menu button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.paste-menu button').forEach(x=>x.classList.remove('active'));b.classList.add('active');['Normal','Laar','Tc'].forEach(x=>document.getElementById('paste'+x).style.display='none');document.getElementById('paste'+b.dataset.paste.charAt(0).toUpperCase()+b.dataset.paste.slice(1)).style.display='block'});
@@ -1839,11 +1950,39 @@ document.querySelectorAll('[data-reset]').forEach(b=>b.onclick=()=>{
 const E=id=>document.getElementById(id);
 
 E('applyResponsible')?.addEventListener('click',()=>applyResponsible(E('bulkResponsible')?.value||''));
-E('applyResponsible2')?.addEventListener('click',()=>applyResponsible(E('bulkResponsible2')?.value||''));
 
-E('addClass')?.addEventListener('click',()=>{
-  const input=E('newClass'), v=norm(input?.value||'');
-  if(v&&!db.classes.includes(v)){db.classes.push(v);if(input)input.value='';saveDB();}
+
+
+function addClassification(){
+  const input=E('newClass');
+  const value=norm(input?.value||'');
+  if(!value)return toast('Escribe una nueva Clasificación / Claim.');
+
+  db.classes=db.classes||[];
+  const exists=db.classes.some(c=>norm(c).toLowerCase()===value.toLowerCase());
+  if(exists){
+    toast('Esa Clasificación / Claim ya existe.');
+    input?.focus();
+    return;
+  }
+
+  db.classes.push(value);
+  db.classes.sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
+  if(input)input.value='';
+
+  safeSet(STORAGE_KEY,JSON.stringify(db));
+  renderConfig();
+  renderSelects();
+  cloudSaveConfig().catch(err=>console.error('Guardar Claims en Firebase:',err));
+  toast('Clasificación / Claim agregada.');
+}
+
+E('addClass')?.addEventListener('click',addClassification);
+E('newClass')?.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){
+    e.preventDefault();
+    addClassification();
+  }
 });
 
 E('addResponsible')?.addEventListener('click',()=>{
@@ -1863,18 +2002,52 @@ E('clearLocalBase')?.addEventListener('click',()=>{
 });
 
 document.addEventListener('change',e=>{
-  if(e.target.dataset.edit && !e.target.dataset.comment){
-    const o=db.orders[e.target.dataset.id];
-    if(o){
-      o[e.target.dataset.edit]=e.target.value;
-      safeSet(STORAGE_KEY,JSON.stringify(db));
-      renderKPIs();
-      renderDashboard();
-    }
+  const target=e.target;
+  if(!target?.dataset?.edit || target.dataset.comment)return;
+
+  const id=target.dataset.id;
+  const field=target.dataset.edit;
+  const o=db.orders[id];
+  if(!o)return;
+
+  const value=target.value;
+  o[field]=value;
+  rememberPendingEdit(id,field,value);
+
+  // Guardado local inmediato: la selección queda fija antes de hablar con Firebase.
+  safeSet(STORAGE_KEY,JSON.stringify(db));
+
+  const savedView=captureCurrentView();
+
+  // No esperamos a Firebase para mantener operativo el selector.
+  cloudWriteOrders([id])
+    .then(()=>{
+      // Si Firebase devolvió el mismo valor, dejamos de proteger la edición.
+      const k=pendingEditKey(id,field);
+      const p=pendingOrderEdits.get(k);
+      if(p && String(db.orders[id]?.[field]??'')===String(value)){
+        // Se mantiene hasta que llegue el snapshot de confirmación,
+        // pero no afecta la UI.
+      }
+      restoreCurrentView(savedView);
+    })
+    .catch(err=>{
+      console.error('Guardado Firebase:',err);
+      restoreCurrentView(savedView);
+      toast('Se guardó localmente; Firebase no respondió todavía.');
+    });
+
+  // Importante: NO reconstruimos la tabla al cambiar Clasificación / Claims.
+  renderKPIs();
+  renderDashboard();
+
+  if(field==='clasificacion'){
+    target.value=value; // reafirma visualmente la selección actual
+    toast(value?'Clasificación / Claims guardada.':'Clasificación / Claims limpiada.');
   }
 });
 
-['fMes','fCanal','fEstado','pMes','pCanal','pEstado','pClass'].forEach(id=>E(id)?.addEventListener('change',renderGrids));
+['fMes','fCanal','fEstado','pMes','pCanal','pEstado','pClass','pDeliveryDate'].forEach(id=>E(id)?.addEventListener('change',renderGrids));
 ['search','search2'].forEach(id=>E(id)?.addEventListener('input',renderGrids));
 
 E('clearFilters')?.addEventListener('click',()=>{
@@ -1884,7 +2057,7 @@ E('clearFilters')?.addEventListener('click',()=>{
 });
 
 E('clearFilters2')?.addEventListener('click',()=>{
-  ['pMes','pCanal','pEstado','pClass'].forEach(id=>{if(E(id))E(id).value='';});
+  ['pMes','pCanal','pEstado','pClass','pDeliveryDate'].forEach(id=>{if(E(id))E(id).value='';});
   if(E('search2'))E('search2').value='';
   renderGrids();
 });
