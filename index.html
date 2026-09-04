@@ -331,9 +331,9 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
   <div class="panel filters">
     <div class="field"><label>Mes activo</label><select id="pMes"></select></div>
     <div class="field"><label>Canal</label><select id="pCanal"><option value="">Todos</option><option>PUP</option><option>SPO</option><option>HD</option></select></div>
-    <div class="field"><label>Estado</label><select id="pEstado"><option value="">Todos</option><option>Entregado</option><option>No entregado</option><option>Pendiente</option></select></div>
+    <div class="field"><label>Estado LAAR</label><select id="pEstado"><option value="">Todos</option></select></div>
     <div class="field"><label>Clasificación</label><select id="pClass"><option value="">Todas</option></select></div>
-    <div class="field"><label>Fecha de entrega</label><input type="date" id="pDeliveryDate"></div>
+    <div class="field"><label>Fecha guía</label><input type="date" id="pGuideDate"></div>
     <button class="secondary" id="sortPendingFirst" title="Mostrar primero los pedidos que aún no están entregados">No entregados primero</button>
     <button class="secondary" id="copyPendingGuides" title="Copiar todas las guías que aún no están entregadas">Copiar guías pendientes</button>
     <input class="search" id="search2" placeholder="Buscar guía / pedido">
@@ -966,19 +966,19 @@ function getFiltered(prefix=''){
         canal=document.getElementById(prefix+'Canal')?.value||'',
         estado=document.getElementById(prefix+'Estado')?.value||'',
         cls=document.getElementById(prefix+'Class')?.value||'',
-        deliveryDate=prefix==='p'?(document.getElementById('pDeliveryDate')?.value||''):'',
+        guideDate=prefix==='p'?(document.getElementById('pGuideDate')?.value||''):'',
         q=(document.getElementById(prefix==='p'?'search2':'search')?.value||'').toLowerCase();
 
   let rows=Object.values(db.orders).filter(o=>{
     let deliveryKey='';
-    const fd=parseDate(o.fechaEntrega);
+    const fd=parseDate(o.fechaGuia);
     if(fd)deliveryKey=`${fd.getFullYear()}-${String(fd.getMonth()+1).padStart(2,'0')}-${String(fd.getDate()).padStart(2,'0')}`;
     return (
       (!mes||o.mes===mes) &&
       (!canal||o.canal===canal) &&
-      (!estado||(estado==='Entregado'?isDelivered(o):estado==='No entregado'?isNotDelivered(o):deriveStatus(o)===estado)) &&
+      (!estado||deriveStatus(o)===estado) &&
       (!cls||o.clasificacion===cls) &&
-      (!deliveryDate||deliveryKey===deliveryDate) &&
+      (!guideDate||deliveryKey===guideDate) &&
       (!q||[o.guia,o.pedido,o.socio,o.nombreSocio,o.destinatario,o.referencia,o.celular].join(' ').toLowerCase().includes(q))
     );
   });
@@ -1097,6 +1097,15 @@ function renderSelects(){
     e.innerHTML='<option value="">Todas</option>'+db.classes.map(c=>`<option>${escapeHtml(c)}</option>`).join('');
     if([...e.options].some(o=>o.value===v))e.value=v;
   });
+
+  const laarStates=[...new Set(Object.values(db.orders).map(o=>deriveStatus(o)).filter(Boolean))]
+    .sort((a,b)=>a.localeCompare(b,'es',{sensitivity:'base'}));
+  const pe=document.getElementById('pEstado');
+  if(pe){
+    const v=pe.value;
+    pe.innerHTML='<option value="">Todos</option>'+laarStates.map(s=>`<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+    if([...pe.options].some(o=>o.value===v))pe.value=v;
+  }
 
   const active=getActiveWorkMonth();
   ['dMes','pMes'].forEach(id=>{
@@ -2047,7 +2056,7 @@ document.addEventListener('change',e=>{
   }
 });
 
-['fMes','fCanal','fEstado','pMes','pCanal','pEstado','pClass','pDeliveryDate'].forEach(id=>E(id)?.addEventListener('change',renderGrids));
+['fMes','fCanal','fEstado','pMes','pCanal','pEstado','pClass','pGuideDate'].forEach(id=>E(id)?.addEventListener('change',renderGrids));
 ['search','search2'].forEach(id=>E(id)?.addEventListener('input',renderGrids));
 
 E('clearFilters')?.addEventListener('click',()=>{
@@ -2057,7 +2066,7 @@ E('clearFilters')?.addEventListener('click',()=>{
 });
 
 E('clearFilters2')?.addEventListener('click',()=>{
-  ['pMes','pCanal','pEstado','pClass','pDeliveryDate'].forEach(id=>{if(E(id))E(id).value='';});
+  ['pMes','pCanal','pEstado','pClass','pGuideDate'].forEach(id=>{if(E(id))E(id).value='';});
   if(E('search2'))E('search2').value='';
   renderGrids();
 });
