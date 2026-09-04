@@ -207,6 +207,48 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 .firebase-dot{width:10px;height:10px;border-radius:50%;background:#aab2b7}.firebase-dot.ok{background:var(--green)}.firebase-dot.err{background:var(--red)}
 @media(max-width:1000px){.weight-kpis{grid-template-columns:repeat(2,1fr)}}
 
+
+/* ===== Generar archivo LAAR ===== */
+.laar-gen-page{height:calc(100vh - 20px);flex-direction:column;min-height:0}
+.laar-gen-page.active{display:flex}
+.generator-card{padding:16px;margin-bottom:12px}
+.generator-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.generator-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}
+.generator-kpi{background:#fff;border:1px solid var(--line);border-radius:9px;padding:12px}
+.generator-kpi .gt{font-size:11px;color:var(--muted);font-weight:800}
+.generator-kpi .gv{font-size:22px;font-weight:900;margin-top:4px}
+.generator-note{font-size:11px;color:var(--muted);line-height:1.5}
+.generator-warning{background:#fff8db;border:1px solid #ecd269;border-radius:8px;padding:10px 12px;font-size:11px}
+.province-tools{display:grid;grid-template-columns:1fr 1fr 150px;gap:8px;margin-bottom:10px}
+.province-tools input{height:36px;border:1px solid #ccd4d9;border-radius:6px;padding:0 9px}
+.province-search{margin:10px 0}
+.province-search input{width:100%;height:36px;border:1px solid #ccd4d9;border-radius:6px;padding:0 9px}
+.province-list{max-height:390px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.province-row{display:grid;grid-template-columns:minmax(180px,1fr) minmax(160px,.8fr) 78px;gap:8px;align-items:center;padding:7px 8px;border-bottom:1px solid var(--line)}
+.province-row:last-child{border-bottom:0}
+.province-row input{height:30px;border:1px solid #d7dde1;border-radius:5px;padding:0 7px;font-size:11px;width:100%}
+.province-row button{height:30px;border:1px solid #e5b600;background:#fff7d1;border-radius:5px;font-size:10px;font-weight:800;cursor:pointer}
+@media(max-width:1000px){
+  .generator-summary{grid-template-columns:repeat(2,1fr)}
+  .province-tools{grid-template-columns:1fr}
+}
+
+
+/* Scroll vertical propio para Configuración */
+#config.page.active{
+  height:calc(100vh - 20px);
+  overflow-y:auto;
+  overflow-x:hidden;
+  padding-right:6px;
+}
+#config.page.active::-webkit-scrollbar{width:10px}
+#config.page.active::-webkit-scrollbar-thumb{background:#c8ced3;border-radius:8px}
+#config.page.active::-webkit-scrollbar-track{background:#f2f4f5}
+
+
+#config .config-grid > .config-card{min-width:0}
+#config .config-grid > .config-card:last-child{margin-bottom:18px}
+
 </style>
 </head>
 <body>
@@ -218,6 +260,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
     <button class="active" data-page="pedidos"><span class="icon">▤</span><span class="nav-label">Pedidos</span></button>
     <button data-page="inicio"><span class="icon">⌂</span><span class="nav-label">Dashboard</span></button>
     <button data-page="pegar"><span class="icon">▣</span><span class="nav-label">Pegar bases</span></button>
+    <button data-page="generar"><span class="icon">▣</span><span class="nav-label">⬇ Generar plantilla LAAR</span></button>
     <button data-page="pesos"><span class="icon">⚖</span><span class="nav-label">Diferencias de peso</span></button>
     <button data-page="config"><span class="icon">⚙</span><span class="nav-label">Configuración</span></button>
   </div>
@@ -358,6 +401,38 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 </section>
 
 
+
+<section id="generar" class="page laar-gen-page">
+  <div class="topbar"><div class="title"><h1>⬇ Generar plantilla LAAR</h1></div></div>
+  <div class="panel generator-card">
+    <div class="generator-actions">
+      <div class="field" style="min-width:230px">
+        <label>Día a procesar · FECHA GUIA</label>
+        <select id="generatorDate"></select>
+      </div>
+      <button class="btn-yellow" id="generateLaarExcel">⬇ Generar plantilla LAAR</button>
+      <span class="generator-note">Solo se procesarán los pedidos cuya FECHA GUIA corresponda al día seleccionado.</span>
+    </div>
+    <div class="generator-summary">
+      <div class="generator-kpi"><div class="gt">Pedidos activos</div><div class="gv" id="gOrders">0</div></div>
+      <div class="generator-kpi"><div class="gt">Pesos corregidos a 2</div><div class="gv" id="gWeights">0</div></div>
+      <div class="generator-kpi"><div class="gt">Destinos identificados</div><div class="gv" id="gMapped">0</div></div>
+      <div class="generator-kpi"><div class="gt">Sin destino configurado</div><div class="gv" id="gMissingDest">0</div></div>
+    </div>
+    <div class="generator-warning">
+      Reglas fijas: <b>VALOR DECLARADO = 180</b> ·
+      <b>DIRECCION ORIGEN = KM 24 VIA DAULE, BODEGAS RANSA BODEGAS ORIFLAME</b> ·
+      Peso menor a <b>1.99 = 2</b>.
+    </div>
+  </div>
+  <div class="gridwrap" style="flex:1;min-height:0">
+    <div class="tablebar"><span>Destinos sin equivalencia para el día seleccionado</span><span>Solo aparecen pedidos cuyo destino no pudo resolverse.</span></div>
+    <div class="table-scroll" id="generatorPreview" style="height:100%">
+      <div class="weight-empty">Carga la Base normal y TC. Aquí aparecerán los pedidos cuyo destino no pueda resolverse automáticamente.</div>
+    </div>
+  </div>
+</section>
+
 <section id="pesos" class="page weight-page">
   <div class="topbar"><div class="title"><h1>Diferencias de peso</h1></div></div>
   <div class="panel weight-upload">
@@ -389,7 +464,6 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
       <div class="listbox" id="responsibleList"></div>
       <div class="addrow"><input id="newResponsible" placeholder="Nuevo responsable"><button class="btn-yellow" id="addResponsible">Agregar</button></div>
     </div>
-
     <div class="panel config-card rule-history" style="grid-column:1/-1">
       <h3>Reglas operativas</h3>
       <div class="rules-grid">
@@ -415,19 +489,27 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
       <h3 style="margin-top:4px">Historial de ajustes</h3>
       <div class="listbox" id="ruleHistory"></div>
     </div>
-
-
     <div class="panel config-card" style="grid-column:1/-1">
-      <h3>Base local</h3>
-      <p class="note">Esta versión inicia con una base local limpia. Si necesitas borrar toda la información cargada en este navegador, puedes hacerlo aquí.</p>
-      <button class="btn-light" id="clearLocalBase">Borrar toda la base local</button>
+      <h3>Provincias / Destinos LAAR</h3>
+      <p class="note">Catálogo usado directamente por el generador LAAR. Puedes agregar nuevas provincias, ciudades o sectores; cualquier equivalencia guardada será considerada automáticamente al generar la plantilla.</p>
+      <div class="province-tools">
+        <input id="provinceNewCity" placeholder="Provincia / ciudad / sector">
+        <input id="provinceNewDest" placeholder="Destino LAAR">
+        <button class="btn-yellow" id="provinceAdd">Agregar provincia / destino</button>
+      </div>
+      <div class="province-search"><input id="provinceSearch" placeholder="Buscar provincia, ciudad, sector o destino..."></div>
+      <div class="province-list" id="provinceList"></div>
     </div>
-
     <div class="panel config-card firebasebox" style="grid-column:1/-1">
       <h3>Firebase</h3>
       <p class="note">Proyecto Firebase integrado. Firestore sincroniza pedidos activos, configuraciones y meses cerrados.</p>
       <textarea id="firebaseConfig" readonly></textarea><div class="firebase-status-card"><span class="firebase-dot" id="firebaseDot"></span><span id="firebaseLiveStatus">Inicializando Firebase...</span></div>
       <div class="actions"><span class="note" id="firebaseStatus">Modo actual: almacenamiento local del navegador.</span><button class="btn-yellow" id="saveFirebase">Probar conexión</button></div>
+    </div>
+    <div class="panel config-card" style="grid-column:1/-1">
+      <h3>Base local</h3>
+      <p class="note">Esta versión inicia con una base local limpia. Si necesitas borrar toda la información cargada en este navegador, puedes hacerlo aquí.</p>
+      <button class="btn-light" id="clearLocalBase">Borrar toda la base local</button>
     </div>
   </div>
 </section>
@@ -485,7 +567,7 @@ function safeRemove(key){
   try{window.localStorage.removeItem(key)}
   catch(e){delete memoryStore[key]}
 }
-const STORAGE_KEY='courierOps_v22_firebase_weight';
+const STORAGE_KEY='courierOps_v25_laar_generator';
 
 const FIREBASE_CONFIG={
   apiKey:"AIzaSyAc9fcVaHVRqIzp6Nwl56KGNpYcILfFgeM",
@@ -516,7 +598,7 @@ async function loadCloudOnce(){
   const [ordersSnap,snapsSnap,configSnap]=await Promise.all([firestore.collection('pedidos').get(),firestore.collection('snapshots').get(),firestore.collection('configuracion').doc('app').get()]);
   if(!ordersSnap.empty){db.orders={};ordersSnap.forEach(d=>db.orders[d.id]=d.data());}
   if(!snapsSnap.empty){db.snapshots=db.snapshots||{};snapsSnap.forEach(d=>db.snapshots[d.id]=d.data());}
-  if(configSnap.exists){const c=configSnap.data()||{};if(Array.isArray(c.classes))db.classes=c.classes;if(Array.isArray(c.responsibles))db.responsibles=c.responsibles;if(Array.isArray(c.ruleHistory))db.ruleHistory=c.ruleHistory;}
+  if(configSnap.exists){const c=configSnap.data()||{};if(Array.isArray(c.classes))db.classes=c.classes;if(Array.isArray(c.responsibles))db.responsibles=c.responsibles;if(Array.isArray(c.ruleHistory))db.ruleHistory=c.ruleHistory;if(Array.isArray(c.provinceMap))db.provinceMap=c.provinceMap;}
   safeSet(STORAGE_KEY,JSON.stringify(db));renderAll();
 }
 function startCloudListeners(){
@@ -532,9 +614,11 @@ async function cloudDeleteOrders(ids){
   if(!firebaseReady||!ids?.length)return;const uniq=[...new Set(ids)];
   for(let i=0;i<uniq.length;i+=400){const batch=firestore.batch();uniq.slice(i,i+400).forEach(id=>batch.delete(firestore.collection('pedidos').doc(id)));await batch.commit();}
 }
-async function cloudSaveConfig(){if(firebaseReady)await firestore.collection('configuracion').doc('app').set({classes:db.classes,responsibles:db.responsibles,ruleHistory:db.ruleHistory||[]},{merge:true});}
+async function cloudSaveConfig(){if(firebaseReady)await firestore.collection('configuracion').doc('app').set({classes:db.classes,responsibles:db.responsibles,ruleHistory:db.ruleHistory||[],provinceMap:db.provinceMap||[]},{merge:true});}
 async function cloudSaveSnapshot(key,snap){if(firebaseReady)await firestore.collection('snapshots').doc(key).set(snap,{merge:true});}
 function yieldUI(){return new Promise(r=>setTimeout(r,0));}
+
+const DEFAULT_PROVINCE_MAP=[{"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "BELLAVISTA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "DURAN-ELOY ALFARO", "dest": "DURAN"}, {"city": "BOLIVAR (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "LETAMENDI", "dest": "GUAYAQUIL"}, {"city": "EL RECREO", "dest": "DURAN"}, {"city": "OLMEDO (SAN ALEJO)", "dest": "GUAYAQUIL"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI LA FLORIDA", "dest": "GUAYAQUIL"}, {"city": "DURAN-ELOY ALFARO", "dest": "DURAN"}, {"city": "VALLE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "EL BATAN(CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "RICAURTE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "DAULE (DAULE-GUAYAS)", "dest": "DAULE"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI VERGELES", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "SUCRE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "EL SAGRARIO (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "TARQUI (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI LA FLORIDA", "dest": "GUAYAQUIL"}, {"city": "TARQUI BASTION POPULAR", "dest": "GUAYAQUIL"}, {"city": "TARQUI ALBORADA", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "SUCRE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "EL SAGRARIO (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "DURAN-ELOY ALFARO", "dest": "DURAN"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAN EDUARDO", "dest": "GUAYAQUIL"}, {"city": "TARQUI LA FLORIDA", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "BELLAVISTA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "HUAYNACAPAC", "dest": "CUENCA"}, {"city": "TARQUI JUAN MONTALVO", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "RICAURTE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "RICAURTE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "LETAMENDI", "dest": "GUAYAQUIL"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "LA AURORA", "dest": "GUAYAQUIL"}, {"city": "BELLAVISTA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "DAULE (DAULE-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "DURAN-ELOY ALFARO", "dest": "DURAN"}, {"city": "TOTORACOCHA", "dest": "CUENCA"}, {"city": "TARQUI PARAISO", "dest": "GUAYAQUIL"}, {"city": "SUCRE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAMANES", "dest": "GUAYAQUIL"}, {"city": "EL VECINO", "dest": "CUENCA"}, {"city": "TARQUI JUAN MONTALVO", "dest": "GUAYAQUIL"}, {"city": "SUCRE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "CARBO (CONCEPCION)", "dest": "GUAYAQUIL"}, {"city": "TARQUI MAPASINGUE", "dest": "GUAYAQUIL"}, {"city": "ROCAFUERTE (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI ALBORADA", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "TARQUI PROSPERINA", "dest": "GUAYAQUIL"}, {"city": "TARQUI MAPASINGUE", "dest": "GUAYAQUIL"}, {"city": "DURAN-ELOY ALFARO", "dest": "DURAN"}, {"city": "TARQUI FAE", "dest": "GUAYAQUIL"}, {"city": "DAULE (DAULE-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "MACHANGARA", "dest": "CUENCA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "EL VECINO", "dest": "CUENCA"}, {"city": "CUENCA", "dest": "CUENCA"}, {"city": "TARQUI JUAN MONTALVO", "dest": "GUAYAQUIL"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "TARQUI VERGELES", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "SAMBORONDON", "dest": "SAMBORONDON"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "CUENCA", "dest": "CUENCA"}, {"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "BOLIVAR (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "CARBO (CONCEPCION)", "dest": "GUAYAQUIL"}, {"city": "TARQUI LOS CEIBOS", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "LA AURORA", "dest": "GUAYAQUIL"}, {"city": "CUENCA", "dest": "CUENCA"}, {"city": "BELLAVISTA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI SAMANES", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "SAMBORONDON", "dest": "SAMBORONDON"}, {"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "EL VECINO", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "LA AURORA", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "TARQUI PARAISO", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "TARQUI JUAN MONTALVO", "dest": "GUAYAQUIL"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "RICAURTE (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI MARTHA ROLDOS", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "TARQUI BASTION POPULAR", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "URDANETA (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAN EDUARDO", "dest": "GUAYAQUIL"}, {"city": "BELLAVISTA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "CANARIBAMBA", "dest": "CUENCA"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "TARQUI ALBORADA", "dest": "GUAYAQUIL"}, {"city": "TARQUI JUAN MONTALVO", "dest": "GUAYAQUIL"}, {"city": "MACHALA (MACHALA-EL ORO)", "dest": "MACHALA"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "LETAMENDI", "dest": "GUAYAQUIL"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "SAMBORONDON", "dest": "SAMBORONDON"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "LA AURORA", "dest": "GUAYAQUIL"}, {"city": "SAN SEBASTIAN (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI ORQUIDEAS", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "XIMENA", "dest": "GUAYAQUIL"}, {"city": "LA LIBERTAD (LA LIBERTAD-SANTA ELENA)", "dest": "SANTA ELENA"}, {"city": "TARQUI KENNEDY", "dest": "GUAYAQUIL"}, {"city": "CUENCA", "dest": "CUENCA"}, {"city": "FEBRES CORDERO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "CUENCA", "dest": "CUENCA"}, {"city": "EL VECINO", "dest": "CUENCA"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "EL VECINO", "dest": "CUENCA"}, {"city": "BOLIVAR (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "EL RECREO", "dest": "DURAN"}, {"city": "YANUNCAY", "dest": "CUENCA"}, {"city": "PASCUALES", "dest": "GUAYAQUIL"}, {"city": "TARQUI SAUCES", "dest": "GUAYAQUIL"}, {"city": "GUAYAQUIL", "dest": "GUAYAQUIL"}, {"city": "TARQUI GUAYACANES", "dest": "GUAYAQUIL"}, {"city": "SUCRE (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "HERMANO MIGUEL", "dest": "CUENCA"}, {"city": "GARCIA MORENO (GUAYAQUIL-GUAYAS)", "dest": "GUAYAQUIL"}, {"city": "SAN BLAS (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "MONAY", "dest": "CUENCA"}, {"city": "MILAGRO", "dest": "MILAGRO"}, {"city": "TARQUI URDESA", "dest": "GUAYAQUIL"}, {"city": "PACCHA(CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "MILAGRO", "dest": "MILAGRO"}, {"city": "TARQUI MONTEBELLO", "dest": "GUAYAQUIL"}, {"city": "ALBORADA", "dest": "GUAYAQUIL"}, {"city": "NOBOL", "dest": "NOBOL"}, {"city": "CHONGON.", "dest": "GUAYAQUIL"}, {"city": "NUEVE DE OCTUBRE", "dest": "GUAYAQUIL"}, {"city": "TARQUI LA GARZOTA", "dest": "GUAYAQUIL"}, {"city": "GIL RAMIREZ DAVALOS", "dest": "CUENCA"}, {"city": "SANTA ANA (CUENCA-AZUAY)", "dest": "CUENCA"}, {"city": "TARQUI MIRAFLORES", "dest": "GUAYAQUIL"}, {"city": "EL MORRO", "dest": "GENERAL VILLAMIL  (PLAYAS)"}, {"city": "COCHAPAMBA (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "RUMIPAMBA (RUMINAHUI-PICHINCHA)", "dest": "RUMIPAMBA"}, {"city": "BELISARIO QUEVEDO", "dest": "QUITO"}, {"city": "KENNEDY", "dest": "QUITO"}, {"city": "LA MERCED (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "SAN BLAS (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "QUITUMBE", "dest": "QUITO"}, {"city": "PONCEANO", "dest": "QUITO"}, {"city": "CHIMBACALLE", "dest": "QUITO"}, {"city": "CALDERON - QUITO", "dest": "QUITO"}, {"city": "MARISCAL SUCRE", "dest": "QUITO"}, {"city": "SAN RAFAEL (RUMINAHUI-PICHINCHA)", "dest": "Rumiñahui"}, {"city": "SAN ANTONIO (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "LA ECUATORIANA", "dest": "QUITO"}, {"city": "SAN ROQUE (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "SANTA PRISCA", "dest": "QUITO"}, {"city": "SAN ISIDRO DEL INCA", "dest": "QUITO"}, {"city": "JIPIJAPA (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "TUMBACO", "dest": "QUITO"}, {"city": "CONOCOTO", "dest": "QUITO"}, {"city": "AMAGUANA", "dest": "QUITO"}, {"city": "PUENGASI", "dest": "QUITO"}, {"city": "SAN ANTONIO (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "SANGOLQUI", "dest": "Rumiñahui"}, {"city": "ALFARO (CHIMBACALLE)", "dest": "QUITO"}, {"city": "CANGAHUA", "dest": "CANGAHUA"}, {"city": "GONZALEZ SUAREZ (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "AYORA", "dest": "AYORA"}, {"city": "TARQUI BELLAVISTA", "dest": "GUAYAQUIL"}, {"city": "EL SALVADOR", "dest": "QUITO"}, {"city": "CHIRIBULO", "dest": "QUITO"}, {"city": "TABABELA", "dest": "QUITO"}, {"city": "LA ARGELIA", "dest": "QUITO"}, {"city": "SAN PEDRO DE TABOADA", "dest": "Rumiñahui"}, {"city": "AYACUCHO", "dest": "GUAYAQUIL"}, {"city": "EL BATAN (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "LA FLORESTA", "dest": "QUITO"}, {"city": "LA MENA", "dest": "QUITO"}, {"city": "ITCHIMBIA", "dest": "QUITO"}, {"city": "PUEMBO", "dest": "QUITO"}, {"city": "ASCAZUBI", "dest": "QUITO"}, {"city": "LA FLORESTA", "dest": ""}, {"city": "RUMIPAMBA (QUITO-PICHINCHA)", "dest": "QUITO"}, {"city": "SAN SEBASTIAN (QUITO-PICHINCHA)", "dest": "QUITO"}];
 
 const DEFAULT_CLASSES=[
   'Pedido en agencia por no cobertura','Direccion Incorrecta, incompleta','No solicito el pedido',
@@ -556,10 +640,11 @@ function loadDB(){
       x.orders=x.orders||{};
       x.ruleHistory=x.ruleHistory||[];
       x.snapshots=x.snapshots||{};
+      x.provinceMap=Array.isArray(x.provinceMap)?x.provinceMap:[...DEFAULT_PROVINCE_MAP];
       return x
     }
   }catch(e){}
-  return {orders:{},classes:[...DEFAULT_CLASSES],responsibles:['JULIANA GUERRA'],firebase:FIREBASE_CONFIG,processed:{},ruleHistory:[],snapshots:{}}
+  return {orders:{},classes:[...DEFAULT_CLASSES],responsibles:['JULIANA GUERRA'],firebase:FIREBASE_CONFIG,processed:{},ruleHistory:[],snapshots:{},provinceMap:[...DEFAULT_PROVINCE_MAP]}
 }
 function saveDB(){
   safeSet(STORAGE_KEY,JSON.stringify(db));
@@ -934,6 +1019,7 @@ function renderConfig(){
       ?h.map(x=>`<div class="listrow"><span>${escapeHtml(x.text)}</span><span>${Number(x.count||0).toLocaleString('es-EC')} registros · ${new Date(x.at).toLocaleString('es-EC')}</span></div>`).join('')
       :'<div class="listrow"><span>Sin ajustes aplicados todavía.</span></div>';
   }
+  renderProvinceList();
 }
 function markProcessed(type,count,detail=''){
   db.processed=db.processed||{};
@@ -1440,12 +1526,13 @@ function applyPupOperationalRule(){
 
 let weightValidation=null;
 function numWeight(v){if(v==null||v==='')return NaN;return Number(String(v).replace(/\$/g,'').replace(/\s/g,'').replace(',','.'));}
+function correctedWeight(v){const n=numWeight(v);if(!Number.isFinite(n))return NaN;return n<1.99?2:n;}
 async function analyzeWeightFile(){
   const file=document.getElementById('weightFile')?.files?.[0];if(!file)return toast('Selecciona la pre-factura de LAAR.');if(typeof XLSX==='undefined')return toast('No se pudo cargar el módulo de Excel.');
   const buf=await file.arrayBuffer(),wb=XLSX.read(buf,{type:'array',cellDates:true});const sheetName=wb.SheetNames.find(n=>/GUIA/i.test(n))||wb.SheetNames[0],ws=wb.Sheets[sheetName];const aoa=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});
   let h=-1;for(let i=0;i<Math.min(20,aoa.length);i++){const c=aoa[i].map(canonHeader);if(c.includes('GUIA')&&(c.includes('PES')||c.includes('PESO'))){h=i;break}}if(h<0)return toast('No pude identificar GUIA y PES.');
   const headers=aoa[h].map(v=>String(v??'')),hc=headers.map(canonHeader),g=hc.indexOf('GUIA'),p=hc.findIndex(x=>x==='PES'||x==='PESO');const rows=[],review=[];let rounded=0,diffs=0,missing=0;
-  for(let i=h+1;i<aoa.length;i++){const row=aoa[i],guia=norm(row[g]);if(!guia)continue;const laar=numWeight(row[p]),o=db.orders[guia],ori=numWeight(o?.peso);let result='',diff=NaN;
+  for(let i=h+1;i<aoa.length;i++){const row=aoa[i],guia=norm(row[g]);if(!guia)continue;const laar=numWeight(row[p]),o=db.orders[guia],ori=correctedWeight(o?.peso);let result='',diff=NaN;
     if(!o||!Number.isFinite(ori)){result='SIN PESO ORIFLAME';missing++;}
     else{diff=laar-ori;if(Math.abs(diff)<0.0005){result='OK - COINCIDE';rounded++;}else if(Number.isInteger(laar)&&Math.round(ori)===laar){result='OK - REDONDEO';rounded++;}else{result='REVISAR';diffs++;}}
     const out=[...row,Number.isFinite(ori)?ori:'',Number.isFinite(diff)?Math.round(diff*1000)/1000:'',result];rows.push(out);if(result==='REVISAR')review.push(out);if(i%750===0)await yieldUI();
@@ -1461,6 +1548,167 @@ function exportWeightDifferences(){
   if(!weightValidation?.reviewRows?.length)return toast('No hay diferencias reales para exportar.');const aoa=[weightValidation.headers,...weightValidation.reviewRows],ws=XLSX.utils.aoa_to_sheet(aoa,{cellDates:true});const range=XLSX.utils.decode_range(ws['!ref']);
   for(let R=range.s.r;R<=range.e.r;R++)for(let C=range.s.c;C<=range.e.c;C++){const cell=ws[XLSX.utils.encode_cell({r:R,c:C})];if(cell&&cell.v instanceof Date){cell.t='d';cell.z='dd/mm/yyyy';}}
   ws['!cols']=weightValidation.headers.map((h,i)=>({wch:i===1?14:(i>=weightValidation.headers.length-3?16:Math.min(24,Math.max(10,String(h).length+2)))}));const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Diferencias Peso');const base=weightValidation.fileName.replace(/\.(xlsx|xlsm|xls)$/i,'');XLSX.writeFile(wb,`${base}_DIFERENCIAS_PESO.xlsx`,{cellDates:true});toast('Excel de diferencias generado.');
+}
+
+
+function normalizeKey(v){
+  return norm(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+}
+function resolveLaarDestination(o){
+  const map=db.provinceMap||[];
+  const candidates=[o.barrio,o.destinatario,o.ciudad].filter(Boolean).map(normalizeKey);
+  for(const cand of candidates){
+    const hit=map.find(x=>normalizeKey(x.city)===cand && norm(x.dest));
+    if(hit)return norm(hit.dest);
+  }
+  for(const cand of candidates){
+    const hits=map.filter(x=>{
+      const k=normalizeKey(x.city);
+      return k && norm(x.dest) && (cand.includes(k)||k.includes(cand));
+    }).sort((a,b)=>normalizeKey(b.city).length-normalizeKey(a.city).length);
+    if(hits.length)return norm(hits[0].dest);
+  }
+  return '';
+}
+function buildLaarAddress(o){
+  const parts=[];
+  if(norm(o.barrio))parts.push(norm(o.barrio));
+  if(norm(o.direccion))parts.push(norm(o.direccion));
+  let out=parts.join(' - ');
+  if(norm(o.referencia))out+=(out?' - ':'')+'REF: '+norm(o.referencia);
+  return out;
+}
+function dateForExcel(v){const d=parseDate(v);return d||'';}
+
+function generatorAvailableDates(){
+  const vals=[...new Set(Object.values(db.orders).map(o=>norm(o.fechaGuia)).filter(Boolean))];
+  return vals.sort((a,b)=>{
+    const da=parseDate(a),dbb=parseDate(b);
+    return (dbb?.getTime()||0)-(da?.getTime()||0);
+  });
+}
+function ensureGeneratorDateOptions(){
+  const sel=document.getElementById('generatorDate');if(!sel)return;
+  const current=sel.value;
+  const dates=generatorAvailableDates();
+  sel.innerHTML=dates.length
+    ?dates.map(d=>`<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('')
+    :'<option value="">Sin fechas disponibles</option>';
+  if(current && dates.includes(current))sel.value=current;
+  else if(dates.length)sel.value=dates[0];
+}
+function generatorSelectedOrders(){
+  const sel=document.getElementById('generatorDate');
+  const chosen=norm(sel?.value);
+  if(!chosen)return [];
+  return Object.values(db.orders).filter(o=>norm(o.fechaGuia)===chosen);
+}
+
+function buildLaarRows(){
+  const orders=generatorSelectedOrders();
+  let corrected=0,mapped=0,missing=0;
+  const rows=orders.map((o,idx)=>{
+    const raw=numWeight(o.peso),weight=correctedWeight(o.peso);
+    if(Number.isFinite(raw)&&raw<1.99)corrected++;
+    const dest=resolveLaarDestination(o);
+    if(dest)mapped++; else missing++;
+    return {
+      'GUIA':o.guia||'',
+      'NOMBRE DESTINATARIO':o.destinatario||'',
+      'DIRECCION DESTINATARIO':buildLaarAddress(o),
+      'TELEFONO DESTINARIO 1':o.telefonoBase||'',
+      'TELEFONO DESTINARIO 2':o.telefonoBase2||'',
+      'CODIGOPD':'',
+      'CIUDAD DESTINATARIO':dest,
+      'PIEZAS':Number(o.bultos)||1,
+      'PESO CLIENTE':Number.isFinite(weight)?weight:'',
+      'VALOR DECLARADO':180,
+      'PRODUCTO':'CARGA',
+      'CONTENIDO':'COSMETICOS',
+      'COMENTARIO':o.codDistr||'',
+      'TAMANIO':'MEDIANO',
+      'NOMBRE REMITENTE':'ORIFLAME DEL ECUADOR',
+      'DIRECCION ORIGEN':'KM 24 VIA DAULE, BODEGAS RANSA BODEGAS ORIFLAME',
+      'TELEFONO ORIGEN':'',
+      'TELEFONO ORIGEN 2':980413190,
+      'CIUDAD ORIGEN':'GUAYAQUIL',
+      'FECHARECOLECCION':dateForExcel(o.fechaGuia),
+      'ORDEN':idx+1,
+      'VALOR PRODUCTO':'',
+      'VALOR FLETE':''
+    };
+  });
+  return {rows,corrected,mapped,missing};
+}
+function renderGeneratorSummary(){
+  ensureGeneratorDateOptions();
+  const data=buildLaarRows(),E=id=>document.getElementById(id);
+  if(E('gOrders'))E('gOrders').textContent=data.rows.length.toLocaleString('es-EC');
+  if(E('gWeights'))E('gWeights').textContent=data.corrected.toLocaleString('es-EC');
+  if(E('gMapped'))E('gMapped').textContent=data.mapped.toLocaleString('es-EC');
+  if(E('gMissingDest'))E('gMissingDest').textContent=data.missing.toLocaleString('es-EC');
+  const missingOrders=generatorSelectedOrders().filter(o=>!resolveLaarDestination(o)),box=E('generatorPreview');
+  if(!box)return;
+  if(!missingOrders.length){
+    box.innerHTML='<div class="weight-empty">Todos los pedidos del día seleccionado tienen destino identificado. La plantilla está lista para generar.</div>';
+    return;
+  }
+  box.innerHTML=`<table><thead><tr><th>GUIA</th><th>BARRIO</th><th>NOMBRE DESTINATARIO</th><th>CIUDAD BASE</th></tr></thead><tbody>${missingOrders.slice(0,300).map(o=>`<tr><td>${escapeHtml(o.guia||'')}</td><td>${escapeHtml(o.barrio||'')}</td><td>${escapeHtml(o.destinatario||'')}</td><td>${escapeHtml(o.ciudad||'')}</td></tr>`).join('')}</tbody></table>`;
+}
+function generateLaarExcel(){
+  if(typeof XLSX==='undefined')return toast('No se pudo cargar el módulo de Excel.');
+  const data=buildLaarRows();
+  if(!data.rows.length)return toast('No hay pedidos para la FECHA GUIA seleccionada.');
+  const ws=XLSX.utils.json_to_sheet(data.rows,{cellDates:true}),range=XLSX.utils.decode_range(ws['!ref']);
+  const headerRow=XLSX.utils.sheet_to_json(ws,{header:1,range:0,blankrows:false})[0]||[],fechaCol=headerRow.indexOf('FECHARECOLECCION');
+  if(fechaCol>=0){
+    for(let r=1;r<=range.e.r;r++){
+      const cell=ws[XLSX.utils.encode_cell({r,c:fechaCol})];
+      if(cell&&cell.v instanceof Date){cell.t='d';cell.z='dd/mm/yyyy';}
+    }
+  }
+  ws['!cols']=headerRow.map(h=>{
+    const text=String(h||'');
+    if(text.includes('DIRECCION'))return {wch:48};
+    if(text.includes('NOMBRE'))return {wch:32};
+    if(text.includes('TELEFONO'))return {wch:18};
+    return {wch:Math.min(24,Math.max(11,text.length+2))};
+  });
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'LAAR');
+  const chosen=norm(document.getElementById('generatorDate')?.value)||'PEDIDOS';
+  const safeDate=chosen.replace(/[\\/:*?"<>|]/g,'-');
+  XLSX.writeFile(wb,`PLANTILLA_LAAR_${safeDate}.xlsx`,{cellDates:true});
+  toast(`Plantilla LAAR generada: ${data.rows.length} pedidos.`);
+}
+function renderProvinceList(){
+  const box=document.getElementById('provinceList');if(!box)return;
+  const q=normalizeKey(document.getElementById('provinceSearch')?.value||'');
+  const rows=(db.provinceMap||[]).map((x,i)=>({...x,_i:i})).filter(x=>!q||normalizeKey(x.city).includes(q)||normalizeKey(x.dest).includes(q));
+  box.innerHTML=rows.length?rows.map(x=>`
+    <div class="province-row">
+      <input data-prov-city="${x._i}" value="${escapeHtml(x.city||'')}">
+      <input data-prov-dest="${x._i}" value="${escapeHtml(x.dest||'')}">
+      <button data-prov-delete="${x._i}">Eliminar</button>
+    </div>`).join(''):'<div class="listrow"><span>Sin coincidencias.</span></div>';
+}
+function saveProvinceField(index,field,value){
+  if(!db.provinceMap?.[index])return;
+  db.provinceMap[index][field]=norm(value);
+  safeSet(STORAGE_KEY,JSON.stringify(db));
+  cloudSaveConfig();
+  renderGeneratorSummary();
+}
+function addProvinceMapping(){
+  const city=norm(document.getElementById('provinceNewCity')?.value),dest=norm(document.getElementById('provinceNewDest')?.value);
+  if(!city)return toast('Escribe la provincia, ciudad o sector.');
+  db.provinceMap=db.provinceMap||[];
+  const existing=db.provinceMap.find(x=>normalizeKey(x.city)===normalizeKey(city));
+  if(existing){existing.dest=dest;toast('Equivalencia actualizada.');}
+  else{db.provinceMap.push({city,dest});toast('Provincia / destino agregado y disponible para la plantilla LAAR.');}
+  document.getElementById('provinceNewCity').value='';
+  document.getElementById('provinceNewDest').value='';
+  saveDB();cloudSaveConfig();
 }
 
 function exportOrdersToExcel(){
@@ -1517,7 +1765,7 @@ function recalculateChannels(){
   }
 }
 
-function renderAll(){renderSelects();renderKPIs();renderGrids();renderConfig();renderPasteStates();renderDashboard()}
+function renderAll(){renderSelects();renderKPIs();renderGrids();renderConfig();renderPasteStates();renderDashboard();renderGeneratorSummary()}
 function applyResponsible(name){
   name=norm(name);if(!name)return toast('Escribe un responsable.');
   if(!db.responsibles.includes(name))db.responsibles.push(name);
@@ -1643,6 +1891,26 @@ E('clearDashFilters')?.addEventListener('click',()=>{
 
 E('applyHoliday')?.addEventListener('click',applyHolidayRule);
 E('applyPupRule')?.addEventListener('click',applyPupOperationalRule);
+
+E('generateLaarExcel')?.addEventListener('click',generateLaarExcel);
+E('generatorDate')?.addEventListener('change',renderGeneratorSummary);
+E('provinceAdd')?.addEventListener('click',addProvinceMapping);
+E('provinceSearch')?.addEventListener('input',renderProvinceList);
+
+document.addEventListener('change',e=>{
+  if(e.target.hasAttribute('data-prov-city'))saveProvinceField(Number(e.target.dataset.provCity),'city',e.target.value);
+  if(e.target.hasAttribute('data-prov-dest'))saveProvinceField(Number(e.target.dataset.provDest),'dest',e.target.value);
+});
+document.addEventListener('click',e=>{
+  const b=e.target.closest?.('[data-prov-delete]');
+  if(!b)return;
+  const idx=Number(b.dataset.provDelete);
+  if(!Number.isInteger(idx)||!db.provinceMap?.[idx])return;
+  db.provinceMap.splice(idx,1);
+  saveDB();cloudSaveConfig();
+  toast('Equivalencia eliminada.');
+});
+
 
 try{recalculateChannels()}catch(e){console.error('recalculateChannels:',e)}
 try{renderAll()}catch(e){console.error('renderAll inicial:',e)}
