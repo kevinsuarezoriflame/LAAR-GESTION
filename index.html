@@ -275,6 +275,18 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 }
 #ordersGrid tbody tr:hover td:nth-child(-n+4){background:#fffbea}
 
+
+/* ===== Gestión como botón de comentario ===== */
+.gestion-cell{text-align:center;min-width:54px}
+.gestion-btn{
+  width:28px;height:28px;border-radius:8px;display:inline-grid;place-items:center;
+  cursor:pointer;padding:0;transition:.15s ease;border:1px solid #e0b800;
+  background:#fff;color:#b08a00
+}
+.gestion-btn.has-comment{background:#ffd400;color:#111;border-color:#e0b800}
+.gestion-btn:hover{transform:translateY(-1px);box-shadow:0 2px 6px rgba(0,0,0,.14)}
+.gestion-btn svg{width:15px;height:15px;display:block}
+
 </style>
 </head>
 <body>
@@ -1072,7 +1084,20 @@ function gridHTML(rows){
   <td><span class="badge ${statusBadgeClass(o)}">${escapeHtml(o.estadoLaar||'')}</span></td>
   <td>${escapeHtml(fmtDate(parseDate(o.fechaEstado))||o.fechaEstado||'')}</td>
   <td>${o.dias??''}</td>
-  <td class="editable comment-cell"><input class="comment-input" data-comment="1" data-edit="gestion" data-id="${o.guia}" value="${escapeHtml(o.gestion||'')}" placeholder="Comentario" title=""></td>
+  <td class="editable comment-cell gestion-cell">
+    <button type="button"
+      class="gestion-btn ${norm(o.gestion)?'has-comment':''}"
+      data-comment="1"
+      data-edit="gestion"
+      data-id="${o.guia}"
+      data-value="${escapeHtml(o.gestion||'')}"
+      title="${norm(o.gestion)?'Ver / editar gestión':'Agregar gestión'}"
+      aria-label="${norm(o.gestion)?'Ver o editar gestión':'Agregar gestión'}">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Zm2 4v2h12V8H6Zm0 4v2h8v-2H6Z"/>
+      </svg>
+    </button>
+  </td>
   <td class="editable"><select data-edit="clasificacion" data-id="${o.guia}"><option value=""></option>${db.classes.map(c=>`<option value="${escapeHtml(c)}" ${o.clasificacion===c?'selected':''}>${escapeHtml(c)}</option>`).join('')}</select></td>
   </tr>`).join('')}</tbody></table></div></div>`
 }
@@ -1279,7 +1304,7 @@ let activeCommentInput=null;
 let hideTooltipTimer=null;
 
 function positionCommentTooltip(input){
-  const text=(input.value||'').trim();
+  const text=((input.dataset?.value??input.value??'')+'').trim();
   if(!text){commentTooltip.style.display='none';return;}
 
   clearTimeout(hideTooltipTimer);
@@ -1311,7 +1336,7 @@ function openCommentEditor(input){
   activeCommentId=input.dataset.id;
   activeCommentInput=input;
 
-  commentEditorText.value=input.value||'';
+  commentEditorText.value=input.dataset?.value??input.value??'';
   commentTooltip.style.display='none';
   commentEditorBackdrop.style.display='flex';
 
@@ -1352,9 +1377,12 @@ commentTooltip.addEventListener('mouseleave',()=>{
   commentTooltip.style.display='none';
 });
 
-document.addEventListener('focusin',e=>{
+document.addEventListener('click',e=>{
   const input=e.target.closest?.('[data-comment="1"]');
-  if(input) openCommentEditor(input);
+  if(input){
+    e.preventDefault();
+    openCommentEditor(input);
+  }
 });
 
 commentEditorCancel.onclick=closeCommentEditor;
@@ -1375,7 +1403,12 @@ commentEditorSave.onclick=()=>{
 
     // Actualizamos solamente la celda que se editó.
     // Así no se pierde posición vertical, horizontal ni fila actual.
-    if(activeCommentInput){activeCommentInput.value=value;}
+    if(activeCommentInput){
+      activeCommentInput.dataset.value=value;
+      activeCommentInput.classList.toggle('has-comment',!!norm(value));
+      activeCommentInput.title=norm(value)?'Ver / editar gestión':'Agregar gestión';
+      activeCommentInput.setAttribute('aria-label',norm(value)?'Ver o editar gestión':'Agregar gestión');
+    }
     const savedView=captureCurrentView();
     cloudWriteOrders([activeCommentId]).finally(()=>restoreCurrentView(savedView));
   }
