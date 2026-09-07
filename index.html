@@ -299,6 +299,30 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
   font-weight:900;
 }
 
+
+/* ===== Orden rápido en DÍAS ===== */
+.days-sort-header{white-space:nowrap}
+.days-sort-btn{
+  display:inline-flex;align-items:center;gap:6px;
+  border:0;background:transparent;padding:0;margin:0;
+  font:inherit;font-weight:900;color:inherit;cursor:pointer
+}
+.days-sort-arrows{
+  display:inline-flex;flex-direction:column;line-height:8px;
+  font-size:9px;transform:translateY(1px)
+}
+.days-sort-arrows .up,
+.days-sort-arrows .down{
+  color:#b8bfc6;transition:.12s ease
+}
+.days-sort-arrows .active{
+  color:#8a6b00;font-weight:900
+}
+.days-sort-btn:hover .up,
+.days-sort-btn:hover .down{
+  color:#8a6b00
+}
+
 </style>
 </head>
 <body>
@@ -1011,6 +1035,7 @@ async function ingestTc(){
   saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} actualizadas · ${ignored} ignoradas.`);
 }
 let pendingFirst=false;
+let daysSort='';
 function getFiltered(prefix=''){
   const mes=document.getElementById(prefix+'Mes')?.value||'',
         canal=document.getElementById(prefix+'Canal')?.value||'',
@@ -1039,6 +1064,26 @@ function getFiltered(prefix=''){
       if(ad!==bd)return ad-bd;
       const da=parseDate(a.fechaGuia), dbb=parseDate(b.fechaGuia);
       return (da?.getTime()||0)-(dbb?.getTime()||0);
+    });
+  }
+
+  if(prefix==='p' && daysSort){
+    rows.sort((a,b)=>{
+      if(pendingFirst){
+        const ad=isDelivered(a)?1:0, bd=isDelivered(b)?1:0;
+        if(ad!==bd)return ad-bd;
+      }
+      const av=(a.dias===0 || a.dias)?Number(a.dias):null;
+      const bv=(b.dias===0 || b.dias)?Number(b.dias):null;
+
+      const aBlank = av===null || Number.isNaN(av);
+      const bBlank = bv===null || Number.isNaN(bv);
+
+      if(aBlank && bBlank)return 0;
+      if(aBlank)return 1;
+      if(bBlank)return -1;
+
+      return daysSort==='asc' ? av-bv : bv-av;
     });
   }
   return rows;
@@ -1073,7 +1118,15 @@ function gridHTML(rows){
   <th>FECHA ENTREGA</th>
   <th>ESTADO LAAR</th>
   <th>FECHA ESTADO</th>
-  <th>DÍAS</th>
+  <th class="days-sort-header">
+      <button type="button" class="days-sort-btn" data-sort-days="1" title="Ordenar DÍAS">
+        <span>DÍAS</span>
+        <span class="days-sort-arrows">
+          <span class="up ${daysSort==='asc'?'active':''}">▲</span>
+          <span class="down ${daysSort==='desc'?'active':''}">▼</span>
+        </span>
+      </button>
+    </th>
   <th>GESTION</th>
   <th>CLASIFICACION/CLAIMS</th>
   </tr></thead><tbody>${rows.map(o=>`<tr>
@@ -1387,6 +1440,18 @@ document.addEventListener('mouseout',e=>{
 
 commentTooltip.addEventListener('mouseleave',()=>{
   commentTooltip.style.display='none';
+});
+
+document.addEventListener('click',e=>{
+  const sortBtn=e.target.closest?.('[data-sort-days="1"]');
+  if(sortBtn){
+    e.preventDefault();
+    daysSort = daysSort==='desc' ? 'asc' : 'desc';
+    const pos=captureCurrentView();
+    renderGrids();
+    restoreCurrentView(pos);
+    return;
+  }
 });
 
 document.addEventListener('click',e=>{
