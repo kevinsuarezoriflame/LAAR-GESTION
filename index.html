@@ -827,6 +827,36 @@ function saveDB(){
 }
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.style.display='block';setTimeout(()=>t.style.display='none',2600)}
 function norm(s){return String(s??'').trim().replace(/\r/g,'')}
+// Clave robusta para cruces por guía. Mantiene el ID real de Firebase,
+// pero tolera espacios, apóstrofes de Excel y valores tipo 2024001234.0.
+function guideKey(v){
+  let s=norm(v).replace(/\u00a0/g,' ').trim();
+  s=s.replace(/^'+/,'').replace(/\s+/g,'');
+  if(/^\d+\.0+$/.test(s))s=s.replace(/\.0+$/,'');
+  if(/^\d+(?:\.\d+)?e[+-]?\d+$/i.test(s)){
+    const n=Number(s);if(Number.isSafeInteger(n))s=String(n);
+  }
+  return s;
+}
+function buildGuideIndex(){
+  const idx=new Map();
+  for(const [id,o] of Object.entries(db.orders||{})){
+    const a=guideKey(id),b=guideKey(o?.guia);
+    if(a&&!idx.has(a))idx.set(a,id);
+    if(b&&!idx.has(b))idx.set(b,id);
+  }
+  return idx;
+}
+function normalizeStatusText(v){
+  return norm(v).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase().replace(/\s+/g,' ').trim();
+}
+function isDeliveredText(v){
+  const s=normalizeStatusText(v);
+  if(!s)return false;
+  // Evita el falso positivo crítico: "NO ENTREGADO" jamás es Entregado.
+  if(/\bNO\s+ENTREGAD[OA]S?\b/.test(s))return false;
+  return /\bENTREGAD[OA]S?\b/.test(s);
+}
 function cleanCell(v){
   return norm(v).replace(/<br\s*\/?\s*>/gi,' ').replace(/\\_/g,'_').replace(/\\@/g,'@').replace(/\u00a0/g,' ').trim()
 }
@@ -894,16 +924,17 @@ function displayMonth(k){
 }
 function laarStatus(o){return norm(o.estadoLaar)||'Pendiente'}
 function deriveStatus(o){
-  const s=laarStatus(o).toLowerCase();
-  if(s.includes('entregado'))return 'Entregado';
+  const raw=laarStatus(o);
+  if(isDeliveredText(raw))return 'Entregado';
   if(!o.estadoLaar)return 'Pendiente';
   return o.estadoLaar;
 }
-function isDelivered(o){return deriveStatus(o)==='Entregado'}
+function isDelivered(o){return isDeliveredText(o?.estadoLaar)}
 function isNotDelivered(o){return !isDelivered(o)}
 function statusBadgeClass(o){
-  const s=deriveStatus(o).toLowerCase();
-  if(s.includes('entregado'))return 'b-ent';
+  const raw=deriveStatus(o),s=normalizeStatusText(raw).toLowerCase();
+  if(isDeliveredText(raw))return 'b-ent';
+  if(/\bno\s+entregad[oa]s?\b/i.test(normalizeStatusText(raw)))return 'b-danger';
   if(s.includes('transito')||s.includes('tránsito')||s.includes('ruta'))return 'b-transit';
   if(s.includes('zona de entrega')||s.includes('zona'))return 'b-zone';
   if(s.includes('novedad'))return 'b-nov';
@@ -1020,20 +1051,23 @@ function showProcessedMissing(type){
 
 async function processNormalRows(objs){
   let n=0,skipped=0,updated=0,created=0,lockedDelivered=0,unchanged=0;const changedIds=[],before={};
+  let guideIndex=buildGuideIndex();
   for(const r of objs){
-    const guia=norm(r['NO_GUIA']);if(!guia||!/^\d{6,}$/.test(guia.replace(/\D/g,''))){skipped++;continue}
-    const old=db.orders[guia]||{};if(db.orders[guia]&&isDelivered(old)){lockedDelivered++;continue}
-    const existed=!!db.orders[guia];
+    const incomingGuide=guideKey(r['NO_GUIA']);if(!incomingGuide||!/^\d{6,}$/.test(incomingGuide.replace(/\D/g,''))){skipped++;continue}
+    const existingId=guideIndex.get(incomingGuide)||incomingGuide;
+    const existed=!!db.orders[existingId];
+    const old=db.orders[existingId]||{};if(existed&&isDelivered(old)){lockedDelivered++;continue}
     const fechaGuia=norm(r['FECHA_GUIA']),cod=norm(r['COD_DISTR']);
-    const patch={guia,fechaGuia,codDistr:cod,destinatario:norm(r['NOMBRE_DESTINATARIO']),direccion:norm(r['DIRECCION_ENVIO']),barrio:norm(r['BARRIO']),telefonoBase:norm(r['TELEFONO_1']),telefonoBase2:norm(r['TELEFONO_2']),pedido:norm(r['NUMERO_DE_ORDEN']),orderDate:norm(r['ORDER_DATE']),ciudad:norm(r['CIUDAD']),peso:norm(r['PESO']),bultos:norm(r['BULTOS']),valor:norm(r['VALOR_DECLARADO']),promesa:norm(r['PROMESA_DE_ENTREGA']),courier:'LAAR',canal:channel(cod,norm(r['NOMBRE_DESTINATARIO'])),mes:monthKey(fechaGuia)};
+    const patch={guia:incomingGuide,fechaGuia,codDistr:cod,destinatario:norm(r['NOMBRE_DESTINATARIO']),direccion:norm(r['DIRECCION_ENVIO']),barrio:norm(r['BARRIO']),telefonoBase:norm(r['TELEFONO_1']),telefonoBase2:norm(r['TELEFONO_2']),pedido:norm(r['NUMERO_DE_ORDEN']),orderDate:norm(r['ORDER_DATE']),ciudad:norm(r['CIUDAD']),peso:norm(r['PESO']),bultos:norm(r['BULTOS']),valor:norm(r['VALOR_DECLARADO']),promesa:norm(r['PROMESA_DE_ENTREGA']),courier:'LAAR',canal:channel(cod,norm(r['NOMBRE_DESTINATARIO'])),mes:monthKey(fechaGuia)};
     n++;
     const fields=Object.keys(patch);
     const changed=!existed||fields.some(k=>!sameFieldValue(old[k],patch[k]));
     if(!changed){unchanged++;if(n%750===0)await yieldUI();continue}
-    before[guia]=existed?orderClone(old):null;
-    db.orders[guia]={...old,...patch,gestion:old.gestion||'',clasificacion:old.clasificacion||'',responsable:old.responsable||''};
+    before[existingId]=existed?orderClone(old):null;
+    db.orders[existingId]={...old,...patch,gestion:old.gestion||'',clasificacion:old.clasificacion||'',responsable:old.responsable||''};
+    guideIndex.set(incomingGuide,existingId);
     if(existed)updated++;else created++;
-    changedIds.push(guia);if(n%750===0)await yieldUI();
+    changedIds.push(existingId);if(n%750===0)await yieldUI();
   }
   if(!n&&!lockedDelivered)return toast('No se reconocieron pedidos válidos.');
   rememberBaseUndo('normal',before);
@@ -1057,9 +1091,10 @@ function ingestNormal(){
   const objs=parseNormalRows();
   if(!objs.length)return toast('No hay datos para procesar.');
 
+  const guideIndex=buildGuideIndex();
   const duplicates=[...new Set(
-    objs.map(r=>norm(r['NO_GUIA']))
-       .filter(g=>g && db.orders[g])
+    objs.map(r=>guideKey(r['NO_GUIA']))
+       .filter(g=>g && guideIndex.has(g))
   )];
 
   if(duplicates.length){
@@ -1074,11 +1109,17 @@ async function ingestLaar(){
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('GUIA')&&firstCanon.includes('ESTADO'))objs=toObj(rows);
   else{const hdr=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','COMENTARIO_LAAR','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA'];objs=rows.map(r=>Object.fromEntries(hdr.map((h,i)=>[h,cleanCell(r[i]??'')]))) }
-  let reviewed=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],missingGuides=[],before={};
+  let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],missingGuides=[],before={};
+  const guideIndex=buildGuideIndex();
   for(const r of objs){
-    const guia=norm(r['GUIA']);if(!guia)continue;reviewed++;
-    const o=db.orders[guia];if(!o){missing++;missingGuides.push(guia);continue}if(isDelivered(o)){lockedDelivered++;continue}
-    const incomingStatus=norm(r['ESTADO']),incomingNovelty=norm(r['NOVEDAD']),incomingDelivery=norm(r['FECHA_ENTREGA']);const delivered=/ENTREGAD/i.test(incomingStatus)||/ENTREGAD/i.test(incomingNovelty);
+    const rawGuia=norm(r['GUIA']),key=guideKey(rawGuia);if(!key)continue;reviewed++;
+    const orderId=guideIndex.get(key);
+    if(!orderId){missing++;missingGuides.push(rawGuia||key);continue}
+    matched++;
+    const o=db.orders[orderId];if(!o){missing++;missingGuides.push(rawGuia||key);continue}
+    if(isDelivered(o)){lockedDelivered++;continue}
+    const incomingStatus=norm(r['ESTADO']),incomingNovelty=norm(r['NOVEDAD']),incomingDelivery=norm(r['FECHA_ENTREGA']);
+    const delivered=isDeliveredText(incomingStatus)||isDeliveredText(incomingNovelty);
     const patch={
       estadoLaar:incomingStatus,
       novedadLaar:incomingNovelty,
@@ -1090,15 +1131,28 @@ async function ingestLaar(){
     };
     const changed=Object.keys(patch).some(k=>!sameFieldValue(o[k],patch[k]));
     if(!changed){unchanged++;continue}
-    before[guia]=orderClone(o);
+    before[orderId]=orderClone(o);
     Object.assign(o,patch);
     if(delivered&&incomingDelivery)deliveredNow++;
-    updated++;changedIds.push(guia);if(reviewed%750===0)await yieldUI();
+    updated++;changedIds.push(orderId);if(reviewed%750===0)await yieldUI();
   }
   const uniqueMissing=[...new Set(missingGuides)];
   rememberBaseUndo('laar',before);
-  markProcessed('laar',reviewed,`${updated} con cambios · ${unchanged} sin cambios · ${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} guías no estaban en la base normal`:''}`,{missingGuides:uniqueMissing});
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtLaar').value='';renderPasteStates();toast(`${reviewed} guías revisadas · ${changedIds.length} cambio(s) enviados a Firebase.`);
+  markProcessed('laar',reviewed,`${matched} cruzadas · ${updated} con cambios · ${unchanged} sin cambios · ${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} sin coincidencia`:''}`,{missingGuides:uniqueMissing});
+  saveDB();
+  if(changedIds.length && !firebaseReady){
+    renderPasteStates();
+    toast(`Cruce local OK: ${matched}/${reviewed} · ${changedIds.length} cambio(s). Firebase está SIN CONEXIÓN; no se enviaron todavía.`);
+    return;
+  }
+  try{
+    await cloudWriteOrders(changedIds);
+    document.getElementById('txtLaar').value='';renderPasteStates();
+    toast(`${reviewed} revisadas · ${matched} cruzadas · ${changedIds.length} cambio(s) enviados a Firebase.`);
+  }catch(e){
+    console.error('Carga LAAR Firebase:',e);
+    toast(`Cruce local OK: ${matched}/${reviewed}. Firebase rechazó la actualización: ${e.message||e}`);
+  }
 }
 
 async function ingestTc(){
@@ -1106,9 +1160,10 @@ async function ingestTc(){
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('WAYBILL_NUMBER'))objs=toObj(rows);else objs=rows.map(r=>({WAYBILL_NUMBER:cleanCell(r[21]??''),SOCIO:cleanCell(r[31]??''),NOMBRE_SOCIO:cleanCell(r[32]??''),TELEFONO_SOCIO:cleanCell(r[33]??''),REFERENCIAS:cleanCell(r[43]??'')}));
   let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[],missingGuides=[],before={};
+  const guideIndex=buildGuideIndex();
   for(const r of objs){
-    reviewed++;const guia=norm(r['WAYBILL_NUMBER']);if(!guia){if(reviewed%750===0)await yieldUI();continue}
-    const o=db.orders[guia];if(!o){missing++;missingGuides.push(guia);if(reviewed%750===0)await yieldUI();continue}found++;
+    reviewed++;const rawGuia=norm(r['WAYBILL_NUMBER']),key=guideKey(rawGuia);if(!key){if(reviewed%750===0)await yieldUI();continue}
+    const orderId=guideIndex.get(key),o=orderId?db.orders[orderId]:null;if(!o){missing++;missingGuides.push(rawGuia||key);if(reviewed%750===0)await yieldUI();continue}found++;
     const incoming={socio:norm(r['SOCIO']),nombreSocio:norm(r['NOMBRE_SOCIO']),celular:norm(r['TELEFONO_SOCIO']),referencia:norm(r['REFERENCIAS'])};
     if(o.socio&&o.nombreSocio&&o.celular&&o.referencia){ignored++;if(reviewed%750===0)await yieldUI();continue}
     let changed=false;const prior=orderClone(o);
@@ -1116,10 +1171,10 @@ async function ingestTc(){
       if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];changed=true}
     }
     if(changed){
-      before[guia]=prior;
+      before[orderId]=prior;
       updated++;
       if(isDelivered(o))deliveredCompleted++;
-      changedIds.push(guia);
+      changedIds.push(orderId);
     }else ignored++;
     if(reviewed%750===0)await yieldUI();
   }
