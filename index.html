@@ -781,9 +781,28 @@ function startCloudListeners(){
   },e=>console.error('Pedidos listener',e));
   firestore.collection('snapshots').onSnapshot(s=>{const next={};s.forEach(d=>next[d.id]=d.data());db.snapshots=next;safeSet(STORAGE_KEY,JSON.stringify(db));renderDashboardMonthSelector();renderDashboard();},e=>console.error('Snapshots listener',e));
 }
+// Escritura segura multi-PC: solo envía a Firebase los campos que realmente cambiaron.
+// Evita que una PC con datos viejos vuelva a sobrescribir STATUS/FECHAS correctos
+// cuando el usuario edita únicamente Gestión, Claims, Responsable, etc.
+async function cloudPatchOrders(items){
+  if(!firebaseReady||!items?.length)return;
+  const byId=new Map();
+  for(const item of items){
+    const id=norm(item?.id);const patch=item?.patch;
+    if(!id||!patch||typeof patch!=='object')continue;
+    byId.set(id,{...(byId.get(id)||{}),...patch});
+  }
+  const ops=[...byId.entries()].map(([id,patch])=>({id,patch}));
+  for(let i=0;i<ops.length;i+=400){
+    const batch=firestore.batch();
+    ops.slice(i,i+400).forEach(({id,patch})=>batch.set(firestore.collection('pedidos').doc(id),patch,{merge:true}));
+    await batch.commit();
+  }
+}
 async function cloudWriteOrders(ids){
+  // Compatibilidad para usos excepcionales: escritura completa. Evitar en edición normal.
   if(!firebaseReady||!ids?.length)return;const uniq=[...new Set(ids)].filter(id=>db.orders[id]);
-  for(let i=0;i<uniq.length;i+=400){const batch=firestore.batch();uniq.slice(i,i+400).forEach(id=>batch.set(firestore.collection('pedidos').doc(id),db.orders[id],{merge:true}));await batch.commit();}
+  return cloudPatchOrders(uniq.map(id=>({id,patch:db.orders[id]})));
 }
 async function cloudDeleteOrders(ids){
   if(!firebaseReady||!ids?.length)return;const uniq=[...new Set(ids)];
@@ -1011,6 +1030,14 @@ function orderClone(o){
   return o?JSON.parse(JSON.stringify(o)):null;
 }
 function sameFieldValue(a,b){return String(a??'')===String(b??'')}
+const NORMAL_SYNC_FIELDS=['guia','fechaGuia','codDistr','destinatario','direccion','barrio','telefonoBase','telefonoBase2','pedido','orderDate','ciudad','peso','bultos','valor','promesa','courier','canal','mes'];
+const LAAR_SYNC_FIELDS=['estadoLaar','novedadLaar','fechaEstado','comentarioLaar','recibidoPor','fechaEntrega','dias'];
+const TC_SYNC_FIELDS=['socio','nombreSocio','celular','referencia'];
+function restorePatch(prev,fields){
+  const patch={};
+  fields.forEach(k=>patch[k]=prev?.[k]??'');
+  return patch;
+}
 function rememberBaseUndo(type,before){
   const ids=Object.keys(before||{});
   if(!ids.length){delete db.lastBaseUndo;return;}
@@ -1021,15 +1048,19 @@ async function undoLastBaseLoad(){
   if(!u?.before)return toast('No hay una carga reciente para deshacer.');
   const count=Object.keys(u.before).length;
   if(!confirm(`Se revertirá la última carga ${String(u.type||'').toUpperCase()} y se restaurarán ${count} pedido(s). Úsalo solo si esa fue la carga equivocada. ¿Continuar?`))return;
-  const restoreIds=[],deleteIds=[];
+  const restoreOps=[],deleteIds=[];
+  const fields=u.type==='laar'?LAAR_SYNC_FIELDS:(u.type==='tc'?TC_SYNC_FIELDS:NORMAL_SYNC_FIELDS);
   for(const [id,prev] of Object.entries(u.before)){
     if(prev===null){delete db.orders[id];deleteIds.push(id)}
-    else{db.orders[id]=prev;restoreIds.push(id)}
+    else{
+      db.orders[id]=prev;
+      restoreOps.push({id,patch:restorePatch(prev,fields)});
+    }
   }
   delete db.lastBaseUndo;
   safeSet(STORAGE_KEY,JSON.stringify(db));renderAll();
   try{
-    await cloudWriteOrders(restoreIds);
+    await cloudPatchOrders(restoreOps);
     await cloudDeleteOrders(deleteIds);
     toast(`Última carga revertida: ${count} pedido(s) restaurados.`);
   }catch(e){
@@ -1050,7 +1081,7 @@ function showProcessedMissing(type){
 }
 
 async function processNormalRows(objs){
-  let n=0,skipped=0,updated=0,created=0,lockedDelivered=0,unchanged=0;const changedIds=[],before={};
+  let n=0,skipped=0,updated=0,created=0,lockedDelivered=0,unchanged=0;const changedIds=[],cloudOps=[],before={};
   let guideIndex=buildGuideIndex();
   for(const r of objs){
     const incomingGuide=guideKey(r['NO_GUIA']);if(!incomingGuide||!/^\d{6,}$/.test(incomingGuide.replace(/\D/g,''))){skipped++;continue}
@@ -1067,12 +1098,14 @@ async function processNormalRows(objs){
     db.orders[existingId]={...old,...patch,gestion:old.gestion||'',clasificacion:old.clasificacion||'',responsable:old.responsable||''};
     guideIndex.set(incomingGuide,existingId);
     if(existed)updated++;else created++;
-    changedIds.push(existingId);if(n%750===0)await yieldUI();
+    changedIds.push(existingId);
+    cloudOps.push({id:existingId,patch:existed?patch:db.orders[existingId]});
+    if(n%750===0)await yieldUI();
   }
   if(!n&&!lockedDelivered)return toast('No se reconocieron pedidos válidos.');
   rememberBaseUndo('normal',before);
   markProcessed('normal',n,`${created} nuevos · ${updated} con cambios · ${unchanged} sin cambios · ${lockedDelivered} entregados protegidos${skipped?` · ${skipped} filas omitidas`:''}`);
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtNormal').value='';renderPasteStates();toast(`${n} pedidos revisados · ${changedIds.length} cambio(s) enviados a Firebase.`);
+  saveDB();await cloudPatchOrders(cloudOps);document.getElementById('txtNormal').value='';renderPasteStates();toast(`${n} pedidos revisados · ${changedIds.length} cambio(s) enviados a Firebase.`);
 }
 
 function ingestNormal(){
@@ -1109,7 +1142,7 @@ async function ingestLaar(){
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('GUIA')&&firstCanon.includes('ESTADO'))objs=toObj(rows);
   else{const hdr=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','COMENTARIO_LAAR','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA'];objs=rows.map(r=>Object.fromEntries(hdr.map((h,i)=>[h,cleanCell(r[i]??'')]))) }
-  let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],missingGuides=[],before={};
+  let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],cloudOps=[],missingGuides=[],before={};
   const guideIndex=buildGuideIndex();
   for(const r of objs){
     const rawGuia=norm(r['GUIA']),key=guideKey(rawGuia);if(!key)continue;reviewed++;
@@ -1134,7 +1167,7 @@ async function ingestLaar(){
     before[orderId]=orderClone(o);
     Object.assign(o,patch);
     if(delivered&&incomingDelivery)deliveredNow++;
-    updated++;changedIds.push(orderId);if(reviewed%750===0)await yieldUI();
+    updated++;changedIds.push(orderId);cloudOps.push({id:orderId,patch});if(reviewed%750===0)await yieldUI();
   }
   const uniqueMissing=[...new Set(missingGuides)];
   rememberBaseUndo('laar',before);
@@ -1146,7 +1179,7 @@ async function ingestLaar(){
     return;
   }
   try{
-    await cloudWriteOrders(changedIds);
+    await cloudPatchOrders(cloudOps);
     document.getElementById('txtLaar').value='';renderPasteStates();
     toast(`${reviewed} revisadas · ${matched} cruzadas · ${changedIds.length} cambio(s) enviados a Firebase.`);
   }catch(e){
@@ -1159,28 +1192,28 @@ async function ingestTc(){
   let rows=parseTSV(document.getElementById('txtTc').value);if(!rows.length)return toast('No hay datos para procesar.');
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('WAYBILL_NUMBER'))objs=toObj(rows);else objs=rows.map(r=>({WAYBILL_NUMBER:cleanCell(r[21]??''),SOCIO:cleanCell(r[31]??''),NOMBRE_SOCIO:cleanCell(r[32]??''),TELEFONO_SOCIO:cleanCell(r[33]??''),REFERENCIAS:cleanCell(r[43]??'')}));
-  let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[],missingGuides=[],before={};
+  let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[],cloudOps=[],missingGuides=[],before={};
   const guideIndex=buildGuideIndex();
   for(const r of objs){
     reviewed++;const rawGuia=norm(r['WAYBILL_NUMBER']),key=guideKey(rawGuia);if(!key){if(reviewed%750===0)await yieldUI();continue}
     const orderId=guideIndex.get(key),o=orderId?db.orders[orderId]:null;if(!o){missing++;missingGuides.push(rawGuia||key);if(reviewed%750===0)await yieldUI();continue}found++;
     const incoming={socio:norm(r['SOCIO']),nombreSocio:norm(r['NOMBRE_SOCIO']),celular:norm(r['TELEFONO_SOCIO']),referencia:norm(r['REFERENCIAS'])};
     if(o.socio&&o.nombreSocio&&o.celular&&o.referencia){ignored++;if(reviewed%750===0)await yieldUI();continue}
-    let changed=false;const prior=orderClone(o);
+    let changed=false;const prior=orderClone(o),patch={};
     for(const k of ['socio','nombreSocio','celular','referencia']){
-      if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];changed=true}
+      if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];patch[k]=incoming[k];changed=true}
     }
     if(changed){
       before[orderId]=prior;
       updated++;
       if(isDelivered(o))deliveredCompleted++;
-      changedIds.push(orderId);
+      changedIds.push(orderId);cloudOps.push({id:orderId,patch});
     }else ignored++;
     if(reviewed%750===0)await yieldUI();
   }
   rememberBaseUndo('tc',before);
   markProcessed('tc',reviewed,`${reviewed} filas revisadas · ${found} guías encontradas · ${ignored} ya completas/sin cambios · ${updated} actualizadas · ${deliveredCompleted} entregados completados sin sobreescribir · ${missing} sin coincidencia`,{missingGuides:[...new Set(missingGuides)]});
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} cambio(s) enviados a Firebase · ${ignored} sin cambios.`);
+  saveDB();await cloudPatchOrders(cloudOps);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} cambio(s) enviados a Firebase · ${ignored} sin cambios.`);
 }
 
 let pendingFirst=false;
@@ -1389,7 +1422,7 @@ function renderConfig(){
   if(fc)fc.value=JSON.stringify(FIREBASE_CONFIG,null,2);
 
   const fs=document.getElementById('firebaseStatus');
-  if(fs)fs.textContent=firebaseReady?'Firebase conectado y sincronizando.':'Firebase integrado; esperando conexión.';
+  if(fs)fs.textContent=firebaseReady?'Firebase conectado · sincronización segura por campos (multi-PC).':'Firebase integrado; esperando conexión.';
 
   const rh=document.getElementById('ruleHistory');
   if(rh){
@@ -1639,7 +1672,7 @@ commentEditorSave.onclick=()=>{
       activeCommentInput.setAttribute('aria-label',norm(value)?'Ver o editar gestión':'Agregar gestión');
     }
     const savedView=captureCurrentView();
-    cloudWriteOrders([activeCommentId]).finally(()=>restoreCurrentView(savedView));
+    cloudPatchOrders([{id:activeCommentId,patch:{gestion:value}}]).finally(()=>restoreCurrentView(savedView));
   }
 
   closeCommentEditor();
@@ -1940,26 +1973,26 @@ function addCalendarDays(dateVal,days){
 }
 function applyHolidayRule(){
   if(!holidayDate.value)return toast('Selecciona la fecha del feriado.');
-  const rest=Number(holidayDays.value||0);let changed=0;const ids=[];
-  Object.values(db.orders).forEach(o=>{
+  const rest=Number(holidayDays.value||0);let changed=0;const ops=[];
+  Object.entries(db.orders).forEach(([id,o])=>{
     if(sameCalendarDate(o.fechaGuia,holidayDate.value) && Number.isFinite(Number(o.dias))){
-      o.dias=Math.max(0,Number(o.dias)-rest);changed++;ids.push(o.guia);
+      o.dias=Math.max(0,Number(o.dias)-rest);changed++;ops.push({id,patch:{dias:o.dias}});
     }
   });
-  addRuleHistory(`Feriado ${holidayDate.value} · -${rest} día(s)`,changed);saveDB();cloudWriteOrders(ids);cloudSaveConfig();toast(`${changed} pedidos actualizados por feriado.`);
+  addRuleHistory(`Feriado ${holidayDate.value} · -${rest} día(s)`,changed);saveDB();cloudPatchOrders(ops);cloudSaveConfig();toast(`${changed} pedidos actualizados por feriado.`);
 }
 function applyPupOperationalRule(){
-  const add=Number(pupRuleDays.value||0);let changed=0;const ids=[];
-  Object.values(db.orders).forEach(o=>{
+  const add=Number(pupRuleDays.value||0);let changed=0;const ops=[];
+  Object.entries(db.orders).forEach(([id,o])=>{
     if(o.canal==='PUP' && o.fechaGuia){
       const f=addCalendarDays(o.fechaGuia,add);
       if(f){
         o.fechaEntrega=f;
-        o.dias=workdaysDiff(o.fechaGuia,f);changed++;ids.push(o.guia);
+        o.dias=workdaysDiff(o.fechaGuia,f);changed++;ops.push({id,patch:{fechaEntrega:o.fechaEntrega,dias:o.dias}});
       }
     }
   });
-  addRuleHistory(`Regla PUP · Fecha Guía +${add} día(s)`,changed);saveDB();cloudWriteOrders(ids);cloudSaveConfig();toast(`${changed} pedidos PUP actualizados.`);
+  addRuleHistory(`Regla PUP · Fecha Guía +${add} día(s)`,changed);saveDB();cloudPatchOrders(ops);cloudSaveConfig();toast(`${changed} pedidos PUP actualizados.`);
 }
 
 
@@ -2327,7 +2360,7 @@ document.addEventListener('change',e=>{
   const savedView=captureCurrentView();
 
   // No esperamos a Firebase para mantener operativo el selector.
-  cloudWriteOrders([id])
+  cloudPatchOrders([{id,patch:{[field]:value}}])
     .then(()=>{
       // Si Firebase devolvió el mismo valor, dejamos de proteger la edición.
       const k=pendingEditKey(id,field);
