@@ -95,6 +95,9 @@ td input,td select{height:20px;border:1px solid #ccd4d9;border-radius:4px;paddin
 .laar-success-icon{width:30px;height:30px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;font-weight:900}
 .laar-success-title{font-size:12px;font-weight:900}
 .laar-success-meta{font-size:11px;color:var(--muted);margin-top:2px}
+.processed-inline-btn{margin-left:8px;border:1px solid #cbd4d9;background:#fff;border-radius:6px;padding:3px 7px;font-size:10px;font-weight:800;cursor:pointer}
+.processed-inline-btn:hover{background:#f7f8f9}
+.processed-inline-btn.warn{border-color:#e0b800;background:#fff8d9}
 textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;padding:10px;font-family:Consolas,monospace;font-size:11px;resize:vertical}
 .actions{display:flex;justify-content:space-between;align-items:center;margin-top:10px}.btn-yellow{background:var(--yellow);border:0;border-radius:7px;padding:10px 16px;font-weight:800;cursor:pointer}.btn-light{background:#fff;border:1px solid #ccd4d9;border-radius:7px;padding:9px 13px;font-weight:700;cursor:pointer}
 .note{font-size:11px;color:var(--muted)}
@@ -624,6 +627,17 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
     </div>
   </div>
 </div>
+<div class="modal-backdrop" id="quickModal">
+  <div class="modal">
+    <h3 id="quickModalTitle">Detalle rápido</h3>
+    <p id="quickModalText"></p>
+    <div class="modal-list" id="quickModalList"></div>
+    <div class="modal-actions">
+      <button class="modal-cancel" id="quickModalClose">Cerrar</button>
+      <button class="modal-confirm" id="quickModalCopy">Copiar guías</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -962,19 +976,69 @@ function showDuplicateModal(duplicates, objs){
   dupModal.style.display='flex';
 }
 
+function orderClone(o){
+  return o?JSON.parse(JSON.stringify(o)):null;
+}
+function sameFieldValue(a,b){return String(a??'')===String(b??'')}
+function rememberBaseUndo(type,before){
+  const ids=Object.keys(before||{});
+  if(!ids.length){delete db.lastBaseUndo;return;}
+  db.lastBaseUndo={type,at:new Date().toISOString(),before};
+}
+async function undoLastBaseLoad(){
+  const u=db.lastBaseUndo;
+  if(!u?.before)return toast('No hay una carga reciente para deshacer.');
+  const count=Object.keys(u.before).length;
+  if(!confirm(`Se revertirá la última carga ${String(u.type||'').toUpperCase()} y se restaurarán ${count} pedido(s). Úsalo solo si esa fue la carga equivocada. ¿Continuar?`))return;
+  const restoreIds=[],deleteIds=[];
+  for(const [id,prev] of Object.entries(u.before)){
+    if(prev===null){delete db.orders[id];deleteIds.push(id)}
+    else{db.orders[id]=prev;restoreIds.push(id)}
+  }
+  delete db.lastBaseUndo;
+  safeSet(STORAGE_KEY,JSON.stringify(db));renderAll();
+  try{
+    await cloudWriteOrders(restoreIds);
+    await cloudDeleteOrders(deleteIds);
+    toast(`Última carga revertida: ${count} pedido(s) restaurados.`);
+  }catch(e){
+    console.error('Deshacer carga:',e);
+    toast('La reversión quedó local; Firebase no respondió completamente.');
+  }
+}
+let quickModalGuides=[];
+function showProcessedMissing(type){
+  const rec=db.processed?.[type];
+  const guides=rec?.extra?.missingGuides||[];
+  if(!guides.length)return toast('No hay guías sin coincidencia en la última carga.');
+  quickModalGuides=[...guides];
+  document.getElementById('quickModalTitle').textContent='Guías no encontradas en Base normal';
+  document.getElementById('quickModalText').textContent=`Estas ${guides.length} guía(s) venían en la data externa, pero no existen en la Base normal activa. No se crearon ni se modificaron en Firebase.`;
+  document.getElementById('quickModalList').innerHTML=guides.map(g=>`<div>${escapeHtml(g)}</div>`).join('');
+  document.getElementById('quickModal').style.display='flex';
+}
+
 async function processNormalRows(objs){
-  let n=0,skipped=0,updated=0,created=0,lockedDelivered=0;const changedIds=[];
+  let n=0,skipped=0,updated=0,created=0,lockedDelivered=0,unchanged=0;const changedIds=[],before={};
   for(const r of objs){
     const guia=norm(r['NO_GUIA']);if(!guia||!/^\d{6,}$/.test(guia.replace(/\D/g,''))){skipped++;continue}
     const old=db.orders[guia]||{};if(db.orders[guia]&&isDelivered(old)){lockedDelivered++;continue}
-    if(db.orders[guia])updated++;else created++;
+    const existed=!!db.orders[guia];
     const fechaGuia=norm(r['FECHA_GUIA']),cod=norm(r['COD_DISTR']);
-    db.orders[guia]={...old,guia,fechaGuia,codDistr:cod,destinatario:norm(r['NOMBRE_DESTINATARIO']),direccion:norm(r['DIRECCION_ENVIO']),barrio:norm(r['BARRIO']),telefonoBase:norm(r['TELEFONO_1']),telefonoBase2:norm(r['TELEFONO_2']),pedido:norm(r['NUMERO_DE_ORDEN']),orderDate:norm(r['ORDER_DATE']),ciudad:norm(r['CIUDAD']),peso:norm(r['PESO']),bultos:norm(r['BULTOS']),valor:norm(r['VALOR_DECLARADO']),promesa:norm(r['PROMESA_DE_ENTREGA']),courier:'LAAR',canal:channel(cod,norm(r['NOMBRE_DESTINATARIO'])),mes:monthKey(fechaGuia),gestion:old.gestion||'',clasificacion:old.clasificacion||'',responsable:old.responsable||''};
-    n++;changedIds.push(guia);if(n%750===0)await yieldUI();
+    const patch={guia,fechaGuia,codDistr:cod,destinatario:norm(r['NOMBRE_DESTINATARIO']),direccion:norm(r['DIRECCION_ENVIO']),barrio:norm(r['BARRIO']),telefonoBase:norm(r['TELEFONO_1']),telefonoBase2:norm(r['TELEFONO_2']),pedido:norm(r['NUMERO_DE_ORDEN']),orderDate:norm(r['ORDER_DATE']),ciudad:norm(r['CIUDAD']),peso:norm(r['PESO']),bultos:norm(r['BULTOS']),valor:norm(r['VALOR_DECLARADO']),promesa:norm(r['PROMESA_DE_ENTREGA']),courier:'LAAR',canal:channel(cod,norm(r['NOMBRE_DESTINATARIO'])),mes:monthKey(fechaGuia)};
+    n++;
+    const fields=Object.keys(patch);
+    const changed=!existed||fields.some(k=>!sameFieldValue(old[k],patch[k]));
+    if(!changed){unchanged++;if(n%750===0)await yieldUI();continue}
+    before[guia]=existed?orderClone(old):null;
+    db.orders[guia]={...old,...patch,gestion:old.gestion||'',clasificacion:old.clasificacion||'',responsable:old.responsable||''};
+    if(existed)updated++;else created++;
+    changedIds.push(guia);if(n%750===0)await yieldUI();
   }
   if(!n&&!lockedDelivered)return toast('No se reconocieron pedidos válidos.');
-  markProcessed('normal',n,`${created} nuevos · ${updated} actualizados · ${lockedDelivered} entregados protegidos${skipped?` · ${skipped} filas omitidas`:''}`);
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtNormal').value='';renderPasteStates();toast(`${n} pedidos procesados correctamente.`);
+  rememberBaseUndo('normal',before);
+  markProcessed('normal',n,`${created} nuevos · ${updated} con cambios · ${unchanged} sin cambios · ${lockedDelivered} entregados protegidos${skipped?` · ${skipped} filas omitidas`:''}`);
+  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtNormal').value='';renderPasteStates();toast(`${n} pedidos revisados · ${changedIds.length} cambio(s) enviados a Firebase.`);
 }
 
 function ingestNormal(){
@@ -1010,41 +1074,60 @@ async function ingestLaar(){
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('GUIA')&&firstCanon.includes('ESTADO'))objs=toObj(rows);
   else{const hdr=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','COMENTARIO_LAAR','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA'];objs=rows.map(r=>Object.fromEntries(hdr.map((h,i)=>[h,cleanCell(r[i]??'')]))) }
-  let updated=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[];
+  let reviewed=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],missingGuides=[],before={};
   for(const r of objs){
-    const guia=norm(r['GUIA']);if(!guia)continue;const o=db.orders[guia];if(!o){missing++;continue}if(isDelivered(o)){lockedDelivered++;continue}
+    const guia=norm(r['GUIA']);if(!guia)continue;reviewed++;
+    const o=db.orders[guia];if(!o){missing++;missingGuides.push(guia);continue}if(isDelivered(o)){lockedDelivered++;continue}
     const incomingStatus=norm(r['ESTADO']),incomingNovelty=norm(r['NOVEDAD']),incomingDelivery=norm(r['FECHA_ENTREGA']);const delivered=/ENTREGAD/i.test(incomingStatus)||/ENTREGAD/i.test(incomingNovelty);
-    o.estadoLaar=incomingStatus;o.novedadLaar=incomingNovelty;o.fechaEstado=norm(r['FECHA_ESTADO']);o.comentarioLaar=norm(r['COMENTARIO_LAAR']);o.recibidoPor=norm(r['RECIBIDO_POR']);
-    if(delivered&&incomingDelivery){o.fechaEntrega=incomingDelivery;o.dias=workdaysDiff(o.fechaGuia,incomingDelivery);deliveredNow++;}else{o.fechaEntrega='';o.dias='';}
-    updated++;changedIds.push(guia);if(updated%750===0)await yieldUI();
+    const patch={
+      estadoLaar:incomingStatus,
+      novedadLaar:incomingNovelty,
+      fechaEstado:norm(r['FECHA_ESTADO']),
+      comentarioLaar:norm(r['COMENTARIO_LAAR']),
+      recibidoPor:norm(r['RECIBIDO_POR']),
+      fechaEntrega:(delivered&&incomingDelivery)?incomingDelivery:'',
+      dias:(delivered&&incomingDelivery)?workdaysDiff(o.fechaGuia,incomingDelivery):''
+    };
+    const changed=Object.keys(patch).some(k=>!sameFieldValue(o[k],patch[k]));
+    if(!changed){unchanged++;continue}
+    before[guia]=orderClone(o);
+    Object.assign(o,patch);
+    if(delivered&&incomingDelivery)deliveredNow++;
+    updated++;changedIds.push(guia);if(reviewed%750===0)await yieldUI();
   }
-  markProcessed('laar',updated,`${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} guías no estaban en la base normal`:''}`);
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtLaar').value='';renderPasteStates();toast(`${updated} pedidos actualizados con LAAR BASE.`);
+  const uniqueMissing=[...new Set(missingGuides)];
+  rememberBaseUndo('laar',before);
+  markProcessed('laar',reviewed,`${updated} con cambios · ${unchanged} sin cambios · ${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} guías no estaban en la base normal`:''}`,{missingGuides:uniqueMissing});
+  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtLaar').value='';renderPasteStates();toast(`${reviewed} guías revisadas · ${changedIds.length} cambio(s) enviados a Firebase.`);
 }
+
 async function ingestTc(){
   let rows=parseTSV(document.getElementById('txtTc').value);if(!rows.length)return toast('No hay datos para procesar.');
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('WAYBILL_NUMBER'))objs=toObj(rows);else objs=rows.map(r=>({WAYBILL_NUMBER:cleanCell(r[21]??''),SOCIO:cleanCell(r[31]??''),NOMBRE_SOCIO:cleanCell(r[32]??''),TELEFONO_SOCIO:cleanCell(r[33]??''),REFERENCIAS:cleanCell(r[43]??'')}));
-  let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[];
+  let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[],missingGuides=[],before={};
   for(const r of objs){
     reviewed++;const guia=norm(r['WAYBILL_NUMBER']);if(!guia){if(reviewed%750===0)await yieldUI();continue}
-    const o=db.orders[guia];if(!o){missing++;if(reviewed%750===0)await yieldUI();continue}found++;
+    const o=db.orders[guia];if(!o){missing++;missingGuides.push(guia);if(reviewed%750===0)await yieldUI();continue}found++;
     const incoming={socio:norm(r['SOCIO']),nombreSocio:norm(r['NOMBRE_SOCIO']),celular:norm(r['TELEFONO_SOCIO']),referencia:norm(r['REFERENCIAS'])};
     if(o.socio&&o.nombreSocio&&o.celular&&o.referencia){ignored++;if(reviewed%750===0)await yieldUI();continue}
-    let changed=false;
+    let changed=false;const prior=orderClone(o);
     for(const k of ['socio','nombreSocio','celular','referencia']){
       if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];changed=true}
     }
     if(changed){
+      before[guia]=prior;
       updated++;
       if(isDelivered(o))deliveredCompleted++;
       changedIds.push(guia);
     }else ignored++;
     if(reviewed%750===0)await yieldUI();
   }
-  markProcessed('tc',updated,`${reviewed} filas revisadas · ${found} guías encontradas · ${ignored} ya completas/sin cambios · ${updated} actualizadas · ${deliveredCompleted} entregados completados sin sobreescribir · ${missing} sin coincidencia`);
-  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} actualizadas · ${ignored} ignoradas.`);
+  rememberBaseUndo('tc',before);
+  markProcessed('tc',reviewed,`${reviewed} filas revisadas · ${found} guías encontradas · ${ignored} ya completas/sin cambios · ${updated} actualizadas · ${deliveredCompleted} entregados completados sin sobreescribir · ${missing} sin coincidencia`,{missingGuides:[...new Set(missingGuides)]});
+  saveDB();await cloudWriteOrders(changedIds);document.getElementById('txtTc').value='';renderPasteStates();toast(`TC procesado: ${updated} cambio(s) enviados a Firebase · ${ignored} sin cambios.`);
 }
+
 let pendingFirst=false;
 let daysSort='';
 function getFiltered(prefix=''){
@@ -1262,9 +1345,9 @@ function renderConfig(){
   }
   renderProvinceList();
 }
-function markProcessed(type,count,detail=''){
+function markProcessed(type,count,detail='',extra=null){
   db.processed=db.processed||{};
-  db.processed[type]={count,detail,at:new Date().toISOString()}
+  db.processed[type]={count,detail,extra:extra||{},at:new Date().toISOString()}
 }
 function renderPasteStates(){
   const recurring=[
@@ -1286,7 +1369,10 @@ function renderPasteStates(){
       if(rec){
         const d=new Date(rec.at);
         done.style.display='flex';
-        meta.innerHTML=`${Number(rec.count||0).toLocaleString('es-EC')} ${label} · ${escapeHtml(rec.detail||'')} · ${d.toLocaleString('es-EC')}`;
+        const missingCount=rec?.extra?.missingGuides?.length||0;
+        const missingBtn=missingCount?`<button class="processed-inline-btn" onclick="showProcessedMissing('${key}')">Ver ${missingCount} guía${missingCount===1?'':'s'}</button>`:'';
+        const undoBtn=(db.lastBaseUndo?.type===key)?`<button class="processed-inline-btn warn" onclick="undoLastBaseLoad()">↶ Deshacer última carga</button>`:'';
+        meta.innerHTML=`${Number(rec.count||0).toLocaleString('es-EC')} ${label} · ${escapeHtml(rec.detail||'')} · ${d.toLocaleString('es-EC')} ${missingBtn} ${undoBtn}`;
       }else{
         done.style.display='none';
       }
@@ -2093,6 +2179,13 @@ document.getElementById('processLaar')?.addEventListener('click',ingestLaar);
 document.getElementById('processTc')?.addEventListener('click',ingestTc);
 document.getElementById('dupCancel')?.addEventListener('click',()=>{pendingNormalRows=null;dupModal.style.display='none';});
 document.getElementById('dupConfirm')?.addEventListener('click',()=>{const rows=pendingNormalRows;pendingNormalRows=null;dupModal.style.display='none';if(rows)processNormalRows(rows);});
+document.getElementById('quickModalClose')?.addEventListener('click',()=>{document.getElementById('quickModal').style.display='none';});
+document.getElementById('quickModal')?.addEventListener('click',e=>{if(e.target===document.getElementById('quickModal'))document.getElementById('quickModal').style.display='none';});
+document.getElementById('quickModalCopy')?.addEventListener('click',async()=>{
+  const text=(quickModalGuides||[]).join('\n');if(!text)return;
+  try{await navigator.clipboard.writeText(text)}catch(e){const ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
+  toast(`${quickModalGuides.length} guía(s) copiadas.`);
+});
 document.getElementById('collapseSidebar')?.addEventListener('click',()=>{
   document.querySelector('.app').classList.toggle('collapsed');
   safeSet('courierSidebarCollapsed',document.querySelector('.app').classList.contains('collapsed')?'1':'0');
