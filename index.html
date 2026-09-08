@@ -8,7 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gestión de Pedidos Courier</title>
+<title>Gestión de Pedidos Courier · v49</title>
 <style>
 :root{
   --yellow:#ffd400; --yellow2:#ffea73; --black:#12171b; --black2:#1b2228;
@@ -98,6 +98,10 @@ td input,td select{height:20px;border:1px solid #ccd4d9;border-radius:4px;paddin
 .processed-inline-btn{margin-left:8px;border:1px solid #cbd4d9;background:#fff;border-radius:6px;padding:3px 7px;font-size:10px;font-weight:800;cursor:pointer}
 .processed-inline-btn:hover{background:#f7f8f9}
 .processed-inline-btn.warn{border-color:#e0b800;background:#fff8d9}
+.laar-sync-state{margin:8px 0 10px;padding:9px 11px;border-radius:8px;border:1px solid #d7dee2;background:#f8fafb;font-size:11px;font-weight:700;line-height:1.45;display:none}
+.laar-sync-state.pending{display:block;border-color:#e0b800;background:#fff9df;color:#725d00}
+.laar-sync-state.ok{display:block;border-color:#9fd9bf;background:#eefaf4;color:#08764d}
+.laar-sync-state.err{display:block;border-color:#efb1b1;background:#fff1f1;color:#b32626}
 textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;padding:10px;font-family:Consolas,monospace;font-size:11px;resize:vertical}
 .actions{display:flex;justify-content:space-between;align-items:center;margin-top:10px}.btn-yellow{background:var(--yellow);border:0;border-radius:7px;padding:10px 16px;font-weight:800;cursor:pointer}.btn-light{background:#fff;border:1px solid #ccd4d9;border-radius:7px;padding:9px 13px;font-weight:700;cursor:pointer}
 .note{font-size:11px;color:var(--muted)}
@@ -453,6 +457,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
         </div>
         <div id="workLaar">
         <h2>LAAR BASE</h2>
+        <div class="laar-sync-state" id="laarSyncState"></div>
         <textarea id="txtLaar" placeholder="Pega aquí la descarga actualizada de LAAR BASE..."></textarea>
         <div class="note" style="margin-top:7px">Puedes procesar LAAR BASE todas las veces que necesites durante el día. Cada nueva pega vuelve a cruzar las guías y refresca fecha de entrega, estado y días.</div>
         <div class="actions"><span></span><button class="btn-yellow" id="processLaar">Procesar actualización LAAR</button></div>
@@ -767,25 +772,34 @@ function mergePendingEditsIntoOrder(id,order){
 
 function startCloudListeners(){
   if(!firebaseReady||cloudSyncStarted)return;cloudSyncStarted=true;
-  firestore.collection('pedidos').onSnapshot(s=>{
+  firestore.collection('pedidos').onSnapshot({includeMetadataChanges:true},s=>{
+    // Firestore emite primero un snapshot optimista de las escrituras locales.
+    // No lo usamos como verdad: la pantalla solo adopta datos confirmados por servidor.
+    if(s.metadata?.hasPendingWrites || s.metadata?.fromCache)return;
     const pos=captureCurrentView();
     const next={};
     s.forEach(d=>{
-      const data=d.data();
+      const data=applyLaarAuthority(d.data());
       next[d.id]=mergePendingEditsIntoOrder(d.id,data);
     });
     db.orders=next;
     safeSet(STORAGE_KEY,JSON.stringify(db));
     renderAll();
     restoreCurrentView(pos);
-  },e=>console.error('Pedidos listener',e));
-  firestore.collection('snapshots').onSnapshot(s=>{const next={};s.forEach(d=>next[d.id]=d.data());db.snapshots=next;safeSet(STORAGE_KEY,JSON.stringify(db));renderDashboardMonthSelector();renderDashboard();},e=>console.error('Snapshots listener',e));
+  },e=>{
+    console.error('Pedidos listener',e);
+    db.lastLaarSync={ok:false,at:new Date().toISOString(),message:`Firebase lectura: ${e.code||''} ${e.message||e}`.trim()};
+    safeSet(STORAGE_KEY,JSON.stringify(db));
+    renderLaarSyncState();
+  });
+  firestore.collection('snapshots').onSnapshot({includeMetadataChanges:true},s=>{if(s.metadata?.hasPendingWrites || s.metadata?.fromCache)return;const next={};s.forEach(d=>next[d.id]=d.data());db.snapshots=next;safeSet(STORAGE_KEY,JSON.stringify(db));renderDashboardMonthSelector();renderDashboard();},e=>console.error('Snapshots listener',e));
 }
 // Escritura segura multi-PC: solo envía a Firebase los campos que realmente cambiaron.
 // Evita que una PC con datos viejos vuelva a sobrescribir STATUS/FECHAS correctos
 // cuando el usuario edita únicamente Gestión, Claims, Responsable, etc.
 async function cloudPatchOrders(items){
-  if(!firebaseReady||!items?.length)return;
+  if(!items?.length)return;
+  if(!firebaseReady||!firestore)throw new Error('Firebase no está conectado para escritura.');
   const byId=new Map();
   for(const item of items){
     const id=norm(item?.id);const patch=item?.patch;
@@ -823,6 +837,25 @@ const DEFAULT_CLASSES=[
 window.addEventListener('error',e=>{
   console.error(e.error||e.message);
 });
+
+// v50: LAAR BASE mantiene una copia autoritativa compacta de sus propios campos.
+// Una pestaña/PC antigua puede escribir campos raíz desactualizados, pero no elimina
+// este objeto con set(...,{merge:true}); la v50 siempre muestra la última LAAR confirmada.
+const LAAR_AUTH_FIELDS=['estadoLaar','novedadLaar','fechaEstado','comentarioLaar','recibidoPor','fechaEntrega','dias'];
+function laarAuthFromOrder(o){
+  const a={};for(const k of LAAR_AUTH_FIELDS)a[k]=o?.[k]??'';return a;
+}
+function applyLaarAuthority(o){
+  if(!o||typeof o!=='object')return o;
+  const a=o.laarActual;
+  if(a&&typeof a==='object'){for(const k of LAAR_AUTH_FIELDS)if(Object.prototype.hasOwnProperty.call(a,k))o[k]=a[k];}
+  return o;
+}
+function normalizeOrdersAuthority(orders){
+  for(const o of Object.values(orders||{}))applyLaarAuthority(o);
+  return orders||{};
+}
+
 let db=loadDB();
 function loadDB(){
   try{
@@ -831,7 +864,7 @@ function loadDB(){
       x.processed=x.processed||{};
       x.classes=x.classes||[...DEFAULT_CLASSES];
       x.responsibles=x.responsibles||['JULIANA GUERRA'];
-      x.orders=x.orders||{};
+      x.orders=normalizeOrdersAuthority(x.orders||{});
       x.ruleHistory=x.ruleHistory||[];
       x.snapshots=x.snapshots||{};
       x.provinceMap=Array.isArray(x.provinceMap)?x.provinceMap:[...DEFAULT_PROVINCE_MAP];
@@ -1137,23 +1170,75 @@ function ingestNormal(){
 
   processNormalRows(objs);
 }
+function firebaseErrorText(e){
+  const code=String(e?.code||'').replace(/^firestore\//,'');
+  const msg=String(e?.message||e||'Error desconocido');
+  if(/permission-denied/i.test(code+msg))return `ESCRITURA RECHAZADA (permission-denied). Revisa las Reglas de Firestore; pasar a Blaze no cambia los permisos.`;
+  if(/resource-exhausted|quota/i.test(code+msg))return `CUOTA FIREBASE AGOTADA (${code||'quota'}).`;
+  if(/unavailable|network|offline/i.test(code+msg))return `Firebase sin conexión estable (${code||'network'}).`;
+  return `Firebase rechazó la escritura${code?` (${code})`:''}: ${msg}`;
+}
+function renderLaarSyncState(){
+  const box=document.getElementById('laarSyncState');if(!box)return;
+  const st=db.lastLaarSync;
+  if(!st){box.className='laar-sync-state';box.style.display='none';box.textContent='';return}
+  box.style.display='block';
+  box.className='laar-sync-state '+(st.pending?'pending':st.ok?'ok':'err');
+  const when=st.at?` · ${new Date(st.at).toLocaleString('es-EC')}`:'';
+  box.textContent=(st.pending?'⏳ ':st.ok?'✓ ':'⚠ ')+(st.message||'')+when;
+}
+function setLaarSyncState(state){
+  db.lastLaarSync={...state,at:new Date().toISOString()};
+  safeSet(STORAGE_KEY,JSON.stringify(db));
+  renderLaarSyncState();
+}
+
 async function ingestLaar(){
   let rows=parseTSV(document.getElementById('txtLaar').value);if(!rows.length)return toast('No hay datos para procesar.');
   let objs;const firstCanon=rows[0].map(canonHeader);
   if(firstCanon.includes('GUIA')&&firstCanon.includes('ESTADO'))objs=toObj(rows);
   else{const hdr=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','COMENTARIO_LAAR','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA'];objs=rows.map(r=>Object.fromEntries(hdr.map((h,i)=>[h,cleanCell(r[i]??'')]))) }
-  let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0;const changedIds=[],cloudOps=[],missingGuides=[],before={};
+
+  let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0,seeded=0;
+  const cloudOps=[],missingGuides=[],before={},localPatches=new Map();
   const guideIndex=buildGuideIndex();
+
+  // Si LAAR trae la misma guía más de una vez, gana el registro más reciente.
+  const bestByGuide=new Map();
+  const statusDateValue=r=>{
+    const d=parseDate(r?.['FECHA_ESTADO']||r?.['FECHA_ENTREGA']||r?.['FECHA_NOVEDAD']||'');
+    return d?.getTime?.()||0;
+  };
   for(const r of objs){
-    const rawGuia=norm(r['GUIA']),key=guideKey(rawGuia);if(!key)continue;reviewed++;
+    const raw=norm(r['GUIA']),key=guideKey(raw);if(!key)continue;
+    const prev=bestByGuide.get(key),t=statusDateValue(r);
+    if(!prev || t>=prev.t)bestByGuide.set(key,{r,t,raw});
+  }
+
+  for(const [key,item] of bestByGuide){
+    const r=item.r,rawGuia=item.raw;reviewed++;
     const orderId=guideIndex.get(key);
     if(!orderId){missing++;missingGuides.push(rawGuia||key);continue}
     matched++;
     const o=db.orders[orderId];if(!o){missing++;missingGuides.push(rawGuia||key);continue}
-    if(isDelivered(o)){lockedDelivered++;continue}
+
+    // Entregados siguen protegidos operativamente. Si aún no tienen la capa
+    // autoritativa v50, la sembramos con el resultado ya consolidado.
+    if(isDelivered(o)){
+      lockedDelivered++;
+      if(!o.laarActual){
+        const auth=laarAuthFromOrder(o);
+        before[orderId]=orderClone(o);
+        cloudOps.push({id:orderId,patch:{laarActual:auth}});
+        localPatches.set(orderId,{laarActual:auth});
+        seeded++;
+      }
+      continue;
+    }
+
     const incomingStatus=norm(r['ESTADO']),incomingNovelty=norm(r['NOVEDAD']),incomingDelivery=norm(r['FECHA_ENTREGA']);
     const delivered=isDeliveredText(incomingStatus)||isDeliveredText(incomingNovelty);
-    const patch={
+    const auth={
       estadoLaar:incomingStatus,
       novedadLaar:incomingNovelty,
       fechaEstado:norm(r['FECHA_ESTADO']),
@@ -1162,29 +1247,67 @@ async function ingestLaar(){
       fechaEntrega:(delivered&&incomingDelivery)?incomingDelivery:'',
       dias:(delivered&&incomingDelivery)?workdaysDiff(o.fechaGuia,incomingDelivery):''
     };
-    const changed=Object.keys(patch).some(k=>!sameFieldValue(o[k],patch[k]));
-    if(!changed){unchanged++;continue}
+
+    const currentAuth=(o.laarActual&&typeof o.laarActual==='object')?o.laarActual:laarAuthFromOrder(o);
+    const dataChanged=LAAR_AUTH_FIELDS.some(k=>!sameFieldValue(currentAuth[k],auth[k]));
+    const needsSeed=!o.laarActual;
+    if(!dataChanged&&!needsSeed){unchanged++;continue}
+
     before[orderId]=orderClone(o);
-    Object.assign(o,patch);
-    if(delivered&&incomingDelivery)deliveredNow++;
-    updated++;changedIds.push(orderId);cloudOps.push({id:orderId,patch});if(reviewed%750===0)await yieldUI();
+    const patch={...auth,laarActual:auth};
+    localPatches.set(orderId,patch);
+    cloudOps.push({id:orderId,patch});
+    if(needsSeed&&!dataChanged)seeded++;
+    if(dataChanged){
+      updated++;
+      if(delivered&&incomingDelivery)deliveredNow++;
+    }
+    if(reviewed%750===0)await yieldUI();
   }
+
   const uniqueMissing=[...new Set(missingGuides)];
-  rememberBaseUndo('laar',before);
-  markProcessed('laar',reviewed,`${matched} cruzadas · ${updated} con cambios · ${unchanged} sin cambios · ${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} sin coincidencia`:''}`,{missingGuides:uniqueMissing});
-  saveDB();
-  if(changedIds.length && !firebaseReady){
+  const duplicateRows=Math.max(0,objs.filter(r=>guideKey(r['GUIA'])).length-bestByGuide.size);
+  const detail=`${matched} cruzadas · ${updated} con resultados nuevos · ${unchanged} sin cambios · ${seeded} protegidas v50 · ${deliveredNow} pasaron a Entregado · ${lockedDelivered} entregados protegidos${missing?` · ${missing} sin coincidencia`:''}${duplicateRows?` · ${duplicateRows} fila(s) duplicada(s) consolidadas`:''}`;
+
+  if(!cloudOps.length){
+    markProcessed('laar',reviewed,detail,{missingGuides:uniqueMissing});
+    setLaarSyncState({ok:true,message:`LAAR revisada: ${reviewed} guía(s). Firebase ya contiene los resultados actuales.`});
     renderPasteStates();
-    toast(`Cruce local OK: ${matched}/${reviewed} · ${changedIds.length} cambio(s). Firebase está SIN CONEXIÓN; no se enviaron todavía.`);
+    toast(`LAAR actual: ${matched}/${reviewed} cruzadas · sin resultados nuevos.`);
     return;
   }
+
+  if(!firebaseReady||!firestore){
+    setLaarSyncState({ok:false,message:`Cruce listo (${updated} resultados nuevos), pero Firebase NO está conectado. No se modificó la base compartida.`});
+    toast('Firebase no está conectado: no se aplicaron los cambios.');
+    return;
+  }
+
+  setLaarSyncState({pending:true,ok:false,message:`Sincronizando resultados actuales de LAAR en Firebase...`});
+
   try{
+    // El commit espera confirmación del servidor. La UI no adopta caché vieja.
     await cloudPatchOrders(cloudOps);
-    document.getElementById('txtLaar').value='';renderPasteStates();
-    toast(`${reviewed} revisadas · ${matched} cruzadas · ${changedIds.length} cambio(s) enviados a Firebase.`);
+
+    for(const [id,patch] of localPatches){
+      if(!db.orders[id])continue;
+      Object.assign(db.orders[id],patch);
+      applyLaarAuthority(db.orders[id]);
+    }
+    rememberBaseUndo('laar',before);
+    markProcessed('laar',reviewed,detail,{missingGuides:uniqueMissing});
+    db.lastLaarSync={ok:true,pending:false,at:new Date().toISOString(),message:`DATOS ACTUALES CONFIRMADOS: ${updated} resultado(s) nuevo(s) · ${seeded} guía(s) protegida(s) para sincronización multi-PC · ${matched}/${reviewed} cruzadas.`};
+    safeSet(STORAGE_KEY,JSON.stringify(db));
+    renderAll();
+    document.getElementById('txtLaar').value='';
+    toast(`LAAR sincronizada: ${updated} resultado(s) nuevo(s) confirmados.`);
   }catch(e){
     console.error('Carga LAAR Firebase:',e);
-    toast(`Cruce local OK: ${matched}/${reviewed}. Firebase rechazó la actualización: ${e.message||e}`);
+    db.lastLaarSync={ok:false,pending:false,at:new Date().toISOString(),message:firebaseErrorText(e)};
+    safeSet(STORAGE_KEY,JSON.stringify(db));
+    renderLaarSyncState();
+    renderPasteStates();
+    toast('Firebase NO guardó la actualización. Revisa el aviso rojo en LAAR BASE.');
   }
 }
 
@@ -1198,10 +1321,11 @@ async function ingestTc(){
     reviewed++;const rawGuia=norm(r['WAYBILL_NUMBER']),key=guideKey(rawGuia);if(!key){if(reviewed%750===0)await yieldUI();continue}
     const orderId=guideIndex.get(key),o=orderId?db.orders[orderId]:null;if(!o){missing++;missingGuides.push(rawGuia||key);if(reviewed%750===0)await yieldUI();continue}found++;
     const incoming={socio:norm(r['SOCIO']),nombreSocio:norm(r['NOMBRE_SOCIO']),celular:norm(r['TELEFONO_SOCIO']),referencia:norm(r['REFERENCIAS'])};
-    if(o.socio&&o.nombreSocio&&o.celular&&o.referencia){ignored++;if(reviewed%750===0)await yieldUI();continue}
     let changed=false;const prior=orderClone(o),patch={};
     for(const k of ['socio','nombreSocio','celular','referencia']){
-      if(!norm(o[k])&&incoming[k]){o[k]=incoming[k];patch[k]=incoming[k];changed=true}
+      // Total Control actualiza el dato si trae un valor nuevo no vacío.
+      // Si la fuente viene vacía, conserva el último dato válido.
+      if(incoming[k]&&!sameFieldValue(o[k],incoming[k])){o[k]=incoming[k];patch[k]=incoming[k];changed=true}
     }
     if(changed){
       before[orderId]=prior;
@@ -2242,7 +2366,7 @@ function recalculateChannels(){
   }
 }
 
-function renderAll(){renderSelects();renderKPIs();renderGrids();renderConfig();renderPasteStates();renderDashboard();renderGeneratorSummary()}
+function renderAll(){renderSelects();renderKPIs();renderGrids();renderConfig();renderPasteStates();renderDashboard();renderGeneratorSummary();renderLaarSyncState()}
 function applyResponsible(name){
   name=norm(name);if(!name)return toast('Escribe un responsable.');
   if(!db.responsibles.includes(name))db.responsibles.push(name);
