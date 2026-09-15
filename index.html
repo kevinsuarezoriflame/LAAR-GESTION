@@ -8,7 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gestión de Pedidos Courier · v51.1</title>
+<title>Gestión de Pedidos Courier · v51.2</title>
 <style>
 :root{
   --yellow:#ffd400; --yellow2:#ffea73; --black:#12171b; --black2:#1b2228;
@@ -359,6 +359,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 .day-filter-options label:hover{background:#f5f7f8}
 .day-filter-options input{margin:0;width:13px;height:13px;accent-color:#687983}
 .day-filter-options small{margin-left:auto;color:#8b959c;font-size:10px}
+.header-error{margin:8px 0 12px;padding:10px 12px;background:#fff4f2;border:1px solid #edc4bd;border-radius:7px;color:#9b3025;font-size:12px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}.header-error[hidden]{display:none}
 </style>
 </head>
 <body>
@@ -457,8 +458,8 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
   <div class="topbar"><div class="title"><h1>Pegar bases</h1></div></div>
   <div class="paste-layout">
     <div class="panel paste-menu">
-      <button class="active" data-paste="normal">1. Base normal Courier</button>
-      <button data-paste="laar">2. LAAR BASE</button>
+      <button class="active" data-paste="normal">1. Base Oriflame</button>
+      <button data-paste="laar">2. Base LAAR</button>
       <button data-paste="tc">3. Total Control (TC)</button>
     </div>
     <div class="panel paste-card">
@@ -471,8 +472,8 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
           </div>
         </div>
         <div id="workNormal">
-        <h2>Base normal Courier</h2>
-        <textarea id="txtNormal" placeholder="Pega aquí las filas copiadas desde Excel..."></textarea>
+        <h2>Base Oriflame</h2><div id="headerError-normal" class="header-error" role="alert" hidden></div>
+        <textarea id="txtNormal" placeholder="Pega aquí la Base Oriflame, incluyendo la fila de encabezados..."></textarea>
         <div class="actions"><span></span><button class="btn-yellow" id="processNormal">Procesar base</button></div>
         </div>
       </div>
@@ -485,9 +486,9 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
           </div>
         </div>
         <div id="workLaar">
-        <h2>LAAR BASE</h2>
+        <h2>Base LAAR</h2><div id="headerError-laar" class="header-error" role="alert" hidden></div>
         <div class="laar-sync-state" id="laarSyncState"></div>
-        <textarea id="txtLaar" placeholder="Pega aquí la descarga actualizada de LAAR BASE..."></textarea>
+        <textarea id="txtLaar" placeholder="Pega aquí la Base LAAR, incluyendo la fila de encabezados..."></textarea>
         <div class="note" style="margin-top:7px">Puedes procesar LAAR BASE todas las veces que necesites durante el día. Cada nueva pega vuelve a cruzar las guías y refresca fecha de entrega, estado y días.</div>
         <div class="actions"><span></span><button class="btn-yellow" id="processLaar">Procesar actualización LAAR</button></div>
         </div>
@@ -501,8 +502,8 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
           </div>
         </div>
         <div id="workTc">
-        <h2>Total Control (TC)</h2>
-        <textarea id="txtTc" placeholder="Pega aquí el reporte de Total Control..."></textarea>
+        <h2>Total Control (TC)</h2><div id="headerError-tc" class="header-error" role="alert" hidden></div>
+        <textarea id="txtTc" placeholder="Pega aquí Total Control, incluyendo la fila de encabezados..."></textarea>
         <div class="actions"><span></span><button class="btn-yellow" id="processTc">Procesar TC</button></div>
         </div>
       </div>
@@ -1055,60 +1056,39 @@ function statusBadgeClass(o){
 }
 let pendingNormalRows=null;
 
-function parseNormalRows(){
-  let rows=parseTSV(document.getElementById('txtNormal').value);
-  if(!rows.length)return [];
-
-  const headers=[
-    'NO_GUIA',
-    'FECHA_GUIA',
-    'COD_DISTR',
-    'NOMBRE_DESTINATARIO',
-    'DIRECCION_ENVIO',
-    'BARRIO',
-    'TELEFONO_1',
-    'TELEFONO_2',
-    'NUMERO_DE_ORDEN',
-    'ORDER_DATE',
-    'CIUDAD',
-    'PESO',
-    'BULTOS',
-    'VALOR_DECLARADO',
-    'PROMESA_DE_ENTREGA'
-  ];
-
-  const first=rows[0].map(canonHeader);
-  const headerDetected=first.includes('NO_GUIA') && first.includes('FECHA_GUIA');
-
-  if(headerDetected){
-    const objs=toObj(rows);
-    return objs.map(r=>({
-      NO_GUIA:r['NO_GUIA']||'',
-      FECHA_GUIA:r['FECHA_GUIA']||'',
-      COD_DISTR:r['COD_DISTR']||'',
-      NOMBRE_DESTINATARIO:r['NOMBRE_DESTINATARIO']||'',
-      DIRECCION_ENVIO:r['DIRECCION_ENVIO']||'',
-      BARRIO:r['BARRIO']||'',
-      TELEFONO_1:r['TELEFONO_1']||'',
-      TELEFONO_2:r['TELEFONO_2']||'',
-      NUMERO_DE_ORDEN:r['NUMERO_DE_ORDEN']||'',
-      ORDER_DATE:r['ORDER_DATE']||'',
-      CIUDAD:r['CIUDAD']||'',
-      PESO:r['PESO']||'',
-      BULTOS:r['BULTOS']||'',
-      VALOR_DECLARADO:r['VALOR_DECLARADO']||'',
-      PROMESA_DE_ENTREGA:r['PROMESA_DE_ENTREGA']||''
-    }));
-  }
-
-  // Sin encabezados: se respetan EXACTAMENTE las columnas A:O de LAAR.xls.
-  // No se intenta "adivinar" posiciones porque eso corría Barrio/Ciudad/Peso/Bultos.
-  return rows.map(r=>{
-    const row=[...r];
-    while(row.length<15)row.push('');
-    return Object.fromEntries(headers.map((h,i)=>[h,cleanCell(row[i]??'')]));
-  });
+// v51.2: all imported bases require recognizable column names, never positional inference.
+function baseHeaderSpec(type){
+  return {
+    normal:{name:'Base Oriflame',identity:['NO_GUIA','FECHA_GUIA'],required:['NO_GUIA','FECHA_GUIA','COD_DISTR','NOMBRE_DESTINATARIO','DIRECCION_ENVIO','BARRIO','TELEFONO_1','TELEFONO_2','NUMERO_DE_ORDEN','ORDER_DATE','CIUDAD','PESO','BULTOS','VALOR_DECLARADO','PROMESA_DE_ENTREGA']},
+    laar:{name:'Base LAAR',identity:['GUIA','ESTADO'],required:['GUIA','ESTADO','NOVEDAD','FECHA_ESTADO','COMENTARIO_LAAR','RECIBIDO_POR','FECHA_ENTREGA']},
+    tc:{name:'Total Control',identity:['WAYBILL_NUMBER'],required:['WAYBILL_NUMBER','SOCIO','NOMBRE_SOCIO','TELEFONO_SOCIO','REFERENCIAS']}
+  }[type];
 }
+function inspectBaseHeaders(type,text){
+  const spec=baseHeaderSpec(type),rows=parseTSV(text);
+  if(!rows.length)return {ok:false,message:'Pega la base completa, incluyendo su fila de encabezados.'};
+  const headers=rows[0].map(canonHeader),types=['normal','laar','tc'];
+  const detected=types.filter(k=>baseHeaderSpec(k).identity.every(h=>headers.includes(h)));
+  if(detected.some(k=>k!==type))return {ok:false,message:`Estás en ${spec.name}, pero los encabezados corresponden a ${detected.filter(k=>k!==type).map(k=>baseHeaderSpec(k).name).join(' / ')}. Pega esa información en su sección.`};
+  const missing=spec.required.filter(h=>!headers.includes(h));
+  if(missing.length)return {ok:false,message:`Encabezados incompletos o no reconocidos para ${spec.name}. Copia desde la primera fila de títulos.\nFaltan: ${missing.join(', ')}.`};
+  const duplicates=[...new Set(headers.filter((h,i)=>h&&headers.indexOf(h)!==i))];
+  if(duplicates.length)return {ok:false,message:`Hay encabezados repetidos: ${duplicates.join(', ')}. Corrige las columnas duplicadas antes de procesar.`};
+  if(rows.length<2)return {ok:false,message:'Solo se pegaron encabezados. Incluye también los registros.'};
+  for(let i=1;i<rows.length;i++){
+    const cells=rows[i].map(canonHeader);
+    if(types.some(k=>baseHeaderSpec(k).identity.every(h=>cells.includes(h))))return {ok:false,message:`La fila ${i+1} contiene otro encabezado. Puede haber bases mezcladas o títulos repetidos; separa la información antes de procesar.`};
+    if(rows[i].slice(headers.length).some(v=>norm(v)))return {ok:false,message:`La fila ${i+1} tiene datos fuera de las columnas del encabezado. Copia nuevamente el rango completo.`};
+  }
+  return {ok:true,objects:toObj(rows)};
+}
+function validatedBaseObjects(type,text){
+  const result=inspectBaseHeaders(type,text),box=document.getElementById('headerError-'+type);
+  if(box){box.hidden=result.ok;box.textContent=result.ok?'':`Carga bloqueada. ${result.message}\nNo se modificó ningún pedido.`;}
+  if(!result.ok){toast('Carga bloqueada: revisa los encabezados.');return null;}
+  return result.objects;
+}
+function parseNormalRows(){return validatedBaseObjects('normal',document.getElementById('txtNormal').value)||[];}
 
 function showDuplicateModal(duplicates, objs){
   pendingNormalRows=objs;
@@ -1201,20 +1181,8 @@ async function processNormalRows(objs){
 }
 
 async function ingestNormal(){
-  const rawRows=parseTSV(document.getElementById('txtNormal').value);
-  if(!rawRows.length)return toast('No hay datos para procesar.');
-
-  const firstCanon=rawRows[0].map(canonHeader);
-  const hasHeader=firstCanon.includes('NO_GUIA') && firstCanon.includes('FECHA_GUIA');
-  const dataRows=hasHeader?rawRows.slice(1):rawRows;
-  const bad=dataRows.filter(r=>r.length<15);
-
-  if(bad.length){
-    return toast(`La base no llegó completa: ${bad.length} fila(s) tienen menos de 15 columnas A:O. Copia directamente desde Excel.`);
-  }
-
-  const objs=parseNormalRows();
-  if(!objs.length)return toast('No hay datos para procesar.');
+  const objs=validatedBaseObjects('normal',document.getElementById('txtNormal').value);
+  if(!objs)return;
 
   const guideIndex=buildGuideIndex();
   const duplicates=[...new Set(
@@ -1253,10 +1221,8 @@ function setLaarSyncState(state){
 }
 
 async function ingestLaar(){
-  let rows=parseTSV(document.getElementById('txtLaar').value);if(!rows.length)return toast('No hay datos para procesar.');
-  let objs;const firstCanon=rows[0].map(canonHeader);
-  if(firstCanon.includes('GUIA')&&firstCanon.includes('ESTADO'))objs=toObj(rows);
-  else{const hdr=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','COMENTARIO_LAAR','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA'];objs=rows.map(r=>Object.fromEntries(hdr.map((h,i)=>[h,cleanCell(r[i]??'')]))) }
+  const objs=validatedBaseObjects('laar',document.getElementById('txtLaar').value);
+  if(!objs)return;
 
   await ensureCloudGuides(objs.map(r=>r.GUIA));
   let reviewed=0,matched=0,updated=0,unchanged=0,deliveredNow=0,lockedDelivered=0,missing=0,seeded=0;
@@ -1372,9 +1338,8 @@ async function ingestLaar(){
 }
 
 async function ingestTc(){
-  let rows=parseTSV(document.getElementById('txtTc').value);if(!rows.length)return toast('No hay datos para procesar.');
-  let objs;const firstCanon=rows[0].map(canonHeader);
-  if(firstCanon.includes('WAYBILL_NUMBER'))objs=toObj(rows);else objs=rows.map(r=>({WAYBILL_NUMBER:cleanCell(r[21]??''),SOCIO:cleanCell(r[31]??''),NOMBRE_SOCIO:cleanCell(r[32]??''),TELEFONO_SOCIO:cleanCell(r[33]??''),REFERENCIAS:cleanCell(r[43]??'')}));
+  const objs=validatedBaseObjects('tc',document.getElementById('txtTc').value);
+  if(!objs)return;
   await ensureCloudGuides(objs.map(r=>r.WAYBILL_NUMBER));
   let reviewed=0,found=0,updated=0,ignored=0,missing=0,deliveredCompleted=0;const changedIds=[],cloudOps=[],missingGuides=[],before={};
   const guideIndex=buildGuideIndex();
