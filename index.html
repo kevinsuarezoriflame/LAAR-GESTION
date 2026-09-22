@@ -8,7 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gestión de Pedidos Courier · v51.2</title>
+<title>Gestión de Pedidos Courier · v51.4</title>
 <style>
 :root{
   --yellow:#ffd400; --yellow2:#ffea73; --black:#12171b; --black2:#1b2228;
@@ -360,6 +360,7 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
 .day-filter-options input{margin:0;width:13px;height:13px;accent-color:#687983}
 .day-filter-options small{margin-left:auto;color:#8b959c;font-size:10px}
 .header-error{margin:8px 0 12px;padding:10px 12px;background:#fff4f2;border:1px solid #edc4bd;border-radius:7px;color:#9b3025;font-size:12px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}.header-error[hidden]{display:none}
+.status-edit-btn{border:0;font-family:inherit;cursor:pointer}.status-edit-btn:hover{box-shadow:0 0 0 1px currentColor}.status-edit-btn:focus-visible{outline:2px solid #2684ff;outline-offset:2px}.status-pencil{opacity:.5;margin-left:3px}.status-editor-fields{display:grid;gap:12px;margin:14px 0}.status-editor-fields [hidden]{display:none}.status-edit-error{color:#b32626;font-size:12px;line-height:1.5}
 </style>
 </head>
 <body>
@@ -673,6 +674,11 @@ textarea{width:100%;min-height:460px;border:1px solid #ccd4d9;border-radius:8px;
     </div>
   </div>
 </div>
+<div class="modal-backdrop" id="statusEditorBackdrop"><div class="modal" role="dialog" aria-modal="true" aria-labelledby="statusEditTitle">
+<h3 id="statusEditTitle">Editar estado LAAR</h3><p id="statusEditGuide"></p>
+<div class="status-editor-fields"><div class="field"><label for="manualLaarStatus">Estado</label><select id="manualLaarStatus"></select></div><div class="field" id="statusDeliveryField" hidden><label for="manualDeliveryDate">Fecha de entrega</label><input type="date" id="manualDeliveryDate"></div></div>
+<div class="status-edit-error" id="statusEditError" role="alert"></div><div class="modal-actions"><button class="modal-cancel" id="statusEditCancel">Cancelar</button><button class="modal-confirm" id="statusEditSave">Guardar</button></div>
+</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -971,10 +977,28 @@ function isDeliveredText(v){
 function cleanCell(v){
   return norm(v).replace(/<br\s*\/?\s*>/gi,' ').replace(/\\_/g,'_').replace(/\\@/g,'@').replace(/\u00a0/g,' ').trim()
 }
+function parseExcelTSV(text){
+  const rows=[];let row=[],cell='',quoted=false;
+  function endCell(){row.push(cleanCell(cell));cell='';}
+  function endRow(){endCell();if(row.some(v=>v!==''))rows.push(row);row=[];}
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];
+    if(quoted){
+      if(ch==='"'){if(text[i+1]==='"'){cell+='"';i++;}else quoted=false;}
+      else cell+=ch;
+    }else if(ch==='"'&&cell===''){quoted=true;}
+    else if(ch==='\t')endCell();
+    else if(ch==='\n'||ch==='\r'){if(ch==='\r'&&text[i+1]==='\n')i++;endRow();}
+    else cell+=ch;
+  }
+  if(quoted)throw new Error('Hay una celda entre comillas sin cerrar. Copia nuevamente el rango completo desde Excel.');
+  if(cell!==''||row.length)endRow();
+  return rows;
+}
 function parseTSV(text){
   text=String(text||'').trim(); if(!text)return [];
   const lines=text.split(/\r?\n/).filter(x=>x.trim());
-  if(lines.some(x=>x.includes('\t'))) return lines.map(r=>r.split('\t').map(cleanCell));
+  if(text.includes('\t')) return parseExcelTSV(text);
   if(lines.every(x=>x.includes('|'))){
     const out=[];
     for(const line of lines){
@@ -1064,10 +1088,18 @@ function baseHeaderSpec(type){
     tc:{name:'Total Control',identity:['WAYBILL_NUMBER'],required:['WAYBILL_NUMBER','SOCIO','NOMBRE_SOCIO','TELEFONO_SOCIO','REFERENCIAS']}
   }[type];
 }
+function normalizedBaseHeaders(type,firstRow){
+  const headers=firstRow.map(canonHeader);
+  // Verified LAAR export: column K has comments but no title. Never infer this for other layouts.
+  const exportHeaders=['GUIA','CLIENTE','CIUDAD_ORIGEN','CIUDAD_DESTINO','FECHA_CREADA','DESTINATARIO','RECIBIDO_POR','FECHA_ENTREGA','NOVEDAD','FECHA_NOVEDAD','','ENVIOS','PESO','VALOR_DECLARADO','PRODUCTO','ESTADO','FECHA_ESTADO','TELEFONO_C','CORREO','MASIVO2','USUARIO','OFICINA','DATOS_EXTRAS'];
+  if(type==='laar'&&headers.length===exportHeaders.length&&headers.every((h,i)=>h===exportHeaders[i]))headers[10]='COMENTARIO_LAAR';
+  return headers;
+}
 function inspectBaseHeaders(type,text){
-  const spec=baseHeaderSpec(type),rows=parseTSV(text);
+  const spec=baseHeaderSpec(type);let rows;
+  try{rows=parseTSV(text);}catch(e){return {ok:false,message:e.message};}
   if(!rows.length)return {ok:false,message:'Pega la base completa, incluyendo su fila de encabezados.'};
-  const headers=rows[0].map(canonHeader),types=['normal','laar','tc'];
+  const headers=normalizedBaseHeaders(type,rows[0]),types=['normal','laar','tc'];
   const detected=types.filter(k=>baseHeaderSpec(k).identity.every(h=>headers.includes(h)));
   if(detected.some(k=>k!==type))return {ok:false,message:`Estás en ${spec.name}, pero los encabezados corresponden a ${detected.filter(k=>k!==type).map(k=>baseHeaderSpec(k).name).join(' / ')}. Pega esa información en su sección.`};
   const missing=spec.required.filter(h=>!headers.includes(h));
@@ -1080,7 +1112,7 @@ function inspectBaseHeaders(type,text){
     if(types.some(k=>baseHeaderSpec(k).identity.every(h=>cells.includes(h))))return {ok:false,message:`La fila ${i+1} contiene otro encabezado. Puede haber bases mezcladas o títulos repetidos; separa la información antes de procesar.`};
     if(rows[i].slice(headers.length).some(v=>norm(v)))return {ok:false,message:`La fila ${i+1} tiene datos fuera de las columnas del encabezado. Copia nuevamente el rango completo.`};
   }
-  return {ok:true,objects:toObj(rows)};
+  return {ok:true,objects:toObj([headers,...rows.slice(1)])};
 }
 function validatedBaseObjects(type,text){
   const result=inspectBaseHeaders(type,text),box=document.getElementById('headerError-'+type);
@@ -1477,8 +1509,8 @@ function gridHTML(rows){
   <td>${escapeHtml(fmtDate(parseDate(o.promesa))||o.promesa||'')}</td>
   <td>${escapeHtml(o.courier||'LAAR')}</td>
   <td><span class="badge b-${(o.canal||'hd').toLowerCase()}">${escapeHtml(o.canal||'')}</span></td>
-  <td>${escapeHtml(fmtDate(parseDate(o.fechaEntrega))||'')}</td>
-  <td><span class="badge ${statusBadgeClass(o)}">${escapeHtml(o.estadoLaar||'')}</span></td>
+  <td>${isDelivered(o)?`<button type="button" class="status-edit-btn" style="background:transparent;font:inherit;padding:0" data-edit-laar-status="${escapeHtml(orderId(o))}" title="Editar fecha de entrega">${escapeHtml(fmtDate(parseDate(o.fechaEntrega))||'Elegir fecha')} <span class="status-pencil">✎</span></button>`:escapeHtml(fmtDate(parseDate(o.fechaEntrega))||'')}</td>
+  <td><button type="button" class="badge status-edit-btn ${statusBadgeClass(o)}" data-edit-laar-status="${escapeHtml(orderId(o))}" title="Editar estado LAAR" aria-label="Editar estado LAAR de la guía ${escapeHtml(o.guia||'')}">${escapeHtml(o.estadoLaar||'Pendiente')} <span class="status-pencil" aria-hidden="true">✎</span></button></td>
   <td>${escapeHtml(fmtDate(parseDate(o.fechaEstado))||o.fechaEstado||'')}</td>
   <td>${o.dias??''}</td>
   <td class="editable comment-cell gestion-cell">
@@ -2765,6 +2797,81 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&menu?.open){menu.open=false;menu.querySelector('summary').focus();}
 });
 window.addEventListener('beforeunload',()=>{ordersUnsub?.();snapshotUnsub?.();latestUnsub?.();configUnsub?.();});
+
+// v51.4: manual status correction, one-document transaction and recoverable history.
+let statusEditContext=null,statusEditBusy=false;
+function statusEditFingerprint(o){return JSON.stringify(['estadoLaar','fechaEntrega','dias','fechaEstado'].map(k=>o?.[k]??''));}
+function inputDateValue(value){const iso=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);const d=iso?new Date(+iso[1],+iso[2]-1,+iso[3]):parseDate(value);return d?`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`:'';}
+function manualStatusChanges(order,state,dateValue){
+  state=norm(state);if(!state)throw new Error('Selecciona un estado.');
+  const changes={estadoLaar:state};
+  if(isDeliveredText(state)){
+    const m=String(dateValue).match(/^(\d{4})-(\d{2})-(\d{2})$/);const d=m?new Date(+m[1],+m[2]-1,+m[3]):null;
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(dateValue)||!d||inputDateValue(fmtDate(d))!==dateValue)throw new Error('Indica una fecha de entrega válida.');
+    const guide=parseDate(order.fechaGuia);
+    if(!guide)throw new Error('El pedido no tiene una fecha guía válida para calcular DÍAS.');
+    if(guide&&new Date(d.getFullYear(),d.getMonth(),d.getDate())<new Date(guide.getFullYear(),guide.getMonth(),guide.getDate()))throw new Error('La entrega no puede ser anterior a la fecha guía.');
+    changes.fechaEntrega=fmtDate(d);changes.dias=workdaysDiff(order.fechaGuia,changes.fechaEntrega);
+  }else{changes.fechaEntrega='';changes.dias='';}
+  const delta=Object.fromEntries(Object.entries(changes).filter(([k,v])=>!sameFieldValue(order[k],v)));
+  if(Object.keys(delta).length&&!sameFieldValue(order.fechaEstado,fmtDate(new Date())))delta.fechaEstado=fmtDate(new Date());
+  return delta;
+}
+function toggleStatusDelivery(){document.getElementById('statusDeliveryField').hidden=!isDeliveredText(document.getElementById('manualLaarStatus').value);}
+function openStatusEditor(id){
+  const o=db.orders[id];if(!o||o.archived)return;
+  statusEditContext={id,fingerprint:statusEditFingerprint(o)};
+  const states=[...new Set(['Por Recolectar','En Bodega','En Tránsito','Zona de Entrega','Con Novedad','Devolución/Entrega','Entregado','No Entregado',...Object.values(db.orders).map(x=>norm(x.estadoLaar))].filter(Boolean))];
+  const sel=document.getElementById('manualLaarStatus');
+  sel.innerHTML=states.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');sel.value=norm(o.estadoLaar)||'Por Recolectar';
+  document.getElementById('statusEditGuide').textContent=`Guía ${o.guia||id}`;
+  document.getElementById('manualDeliveryDate').value=inputDateValue(o.fechaEntrega);
+  document.getElementById('statusEditError').textContent='';toggleStatusDelivery();
+  document.getElementById('statusEditorBackdrop').style.display='flex';sel.focus();
+}
+function closeStatusEditor(){if(statusEditBusy)return;document.getElementById('statusEditorBackdrop').style.display='none';statusEditContext=null;}
+async function commitManualStatus(context,state,date){
+  if(!firebaseReady||!firestore)throw new Error('Firebase no está conectado. No se guardaron cambios.');
+  const local=db.orders[context.id];if(!local||local.archived)throw new Error('El pedido no está activo.');
+  if(!Object.keys(manualStatusChanges(local,state,date)).length)return null;
+  const ref=firestore.collection('pedidos').doc(context.id),at=new Date().toISOString();
+  return firestore.runTransaction(async tx=>{
+    const snap=await tx.get(ref);if(!snap.exists)throw new Error('El pedido ya no está disponible.');
+    const raw=snap.data(),current=applyLaarAuthority({...raw});
+    if(current.archived)throw new Error('El pedido fue archivado. No se modificó.');
+    if(statusEditFingerprint(current)!==context.fingerprint)throw new Error('El estado o las fechas cambiaron en otra PC. Cierra esta ventana y vuelve a abrir el pedido.');
+    const delta=manualStatusChanges(current,state,date);if(!Object.keys(delta).length)return null;
+    const patch={...delta};
+    // Seed all authority fields only for legacy documents; otherwise patch changed nested fields only.
+    if(!raw.laarActual)patch.laarActual={...laarAuthFromOrder(current),...delta};
+    else for(const [key,value] of Object.entries(delta))patch['laarActual.'+key]=value;
+    patch.estadoManualHistorial=firebase.firestore.FieldValue.arrayUnion({at,origen:'edicion_manual',anterior:laarAuthFromOrder(current),cambios:delta});
+    tx.update(ref,patch);
+    return {delta,authority:{...laarAuthFromOrder(current),...delta}};
+  });
+}
+async function saveStatusEditor(){
+  if(statusEditBusy||!statusEditContext)return;
+  const context={...statusEditContext},button=document.getElementById('statusEditSave'),error=document.getElementById('statusEditError');
+  statusEditBusy=true;button.disabled=true;button.textContent='Guardando…';error.textContent='';
+  document.getElementById('manualLaarStatus').disabled=true;document.getElementById('manualDeliveryDate').disabled=true;
+  try{
+    const result=await commitManualStatus(context,document.getElementById('manualLaarStatus').value,document.getElementById('manualDeliveryDate').value);
+    if(result&&db.orders[context.id]){
+      Object.assign(db.orders[context.id],result.delta,{laarActual:result.authority});
+      const known=confirmedOrders.get(context.id);if(known)confirmedOrders.set(context.id,{...known,...result.delta,laarActual:result.authority});
+    }
+    statusEditBusy=false;closeStatusEditor();renderSelects();scheduleViews();
+    toast(result?'Estado LAAR actualizado.':'El estado ya tenía esos valores.');
+  }catch(e){error.textContent=e.message||'No se pudo guardar el estado. Intenta nuevamente.';}
+  finally{statusEditBusy=false;button.disabled=false;button.textContent='Guardar';document.getElementById('manualLaarStatus').disabled=false;document.getElementById('manualDeliveryDate').disabled=false;}
+}
+document.addEventListener('click',e=>{const b=e.target.closest('[data-edit-laar-status]');if(b)openStatusEditor(b.dataset.editLaarStatus);});
+document.getElementById('manualLaarStatus').addEventListener('change',toggleStatusDelivery);
+document.getElementById('statusEditCancel').addEventListener('click',closeStatusEditor);
+document.getElementById('statusEditSave').addEventListener('click',saveStatusEditor);
+document.getElementById('statusEditorBackdrop').addEventListener('click',e=>{if(e.target===e.currentTarget)closeStatusEditor();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&statusEditContext)closeStatusEditor();});
 
 try{renderAll()}catch(e){console.error('renderAll inicial:',e)}
 setTimeout(initFirebaseCloud,100);
