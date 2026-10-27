@@ -8,7 +8,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Gestión de Pedidos Courier · v51.6</title>
+<title>Gestión de Pedidos Courier · v51.7 / sincronización optimizada</title>
 <style>
 :root{
   --yellow:#ffd400; --yellow2:#ffea73; --black:#12171b; --black2:#1b2228;
@@ -859,8 +859,17 @@ async function startCloudListeners(){
 // Escritura segura multi-PC: solo envía a Firebase los campos que realmente cambiaron.
 // Evita que una PC con datos viejos vuelva a sobrescribir STATUS/FECHAS correctos
 // cuando el usuario edita únicamente Gestión, Claims, Responsable, etc.
-async function cloudPatchOrders(items){
-  if(!items?.length)return;
+// Lotes pequeños: conserva la escritura parcial y no reemplaza campos de otra PC.
+// Un timeout NO cancela un commit que Firebase ya aceptó: no vaciar la base pegada.
+async function laarServerWait(promise,ms=45000,label='Firestore'){
+  let timer;
+  try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>{
+    const error=new Error(label+' sigue pendiente de confirmación. Conserva la base y revisa Firebase antes de reintentar.');
+    error.code='sync-timeout';reject(error);
+  },ms)})]);}finally{clearTimeout(timer)}
+}
+async function cloudPatchOrders(items,onProgress=null){
+  if(!items?.length)return 0;
   if(!firebaseReady||!firestore)throw new Error('Firebase no está conectado para escritura.');
   const byId=new Map();
   for(const item of items){
@@ -870,12 +879,17 @@ async function cloudPatchOrders(items){
     byId.set(id,{...(byId.get(id)||{}),...patch});
   }
   const ops=[...byId.entries()].map(([id,patch])=>{const baseline=confirmedOrders.get(id);return {id,patch:Object.fromEntries(Object.entries(patch).filter(([k,v])=>!baseline||JSON.stringify(baseline[k])!==JSON.stringify(v)))};}).filter(x=>Object.keys(x.patch).length);
-  for(let i=0;i<ops.length;i+=400){
-    const batch=firestore.batch();
-    ops.slice(i,i+400).forEach(({id,patch})=>batch.set(firestore.collection('pedidos').doc(id),patch,{merge:true}));
-    await batch.commit();
-    for(const {id,patch} of ops.slice(i,i+400)){confirmedOrders.set(id,{...(confirmedOrders.get(id)||{}),...patch});if(db.orders[id])Object.assign(db.orders[id],patch);}
+  let confirmed=0;
+  for(let i=0;i<ops.length;i+=120){
+    const chunk=ops.slice(i,i+120),batch=firestore.batch();
+    chunk.forEach(({id,patch})=>batch.set(firestore.collection('pedidos').doc(id),patch,{merge:true}));
+    await laarServerWait(batch.commit(),45000,'Lote LAAR '+(Math.floor(i/120)+1));
+    for(const {id,patch} of chunk){confirmedOrders.set(id,{...(confirmedOrders.get(id)||{}),...patch});if(db.orders[id])Object.assign(db.orders[id],patch);}
+    confirmed+=chunk.length;
+    if(typeof onProgress==='function')onProgress(confirmed,ops.length);
+    await yieldUI();
   }
+  return confirmed;
 }
 async function cloudWriteOrders(ids){
   // Compatibilidad para usos excepcionales: escritura completa. Evitar en edición normal.
@@ -1374,7 +1388,9 @@ async function ingestLaar(){
 
   try{
     // El commit espera confirmación del servidor. La UI no adopta caché vieja.
-    await cloudPatchOrders(cloudOps);
+    await cloudPatchOrders(cloudOps,(done,total)=>{
+      setLaarSyncState({pending:true,ok:false,message:`LAAR: ${done}/${total} guías confirmadas en Firebase. Sincronizando siguientes lotes...`});
+    });
 
     for(const [id,patch] of localPatches){
       if(!db.orders[id])continue;
@@ -1390,11 +1406,11 @@ async function ingestLaar(){
     toast(`LAAR sincronizada: ${updated} resultado(s) nuevo(s) confirmados.`);
   }catch(e){
     console.error('Carga LAAR Firebase:',e);
-    db.lastLaarSync={ok:false,pending:false,at:new Date().toISOString(),message:firebaseErrorText(e)};
+    db.lastLaarSync={ok:false,pending:e?.code==='sync-timeout',at:new Date().toISOString(),message:e?.code==='sync-timeout'?'Sin confirmación por demora de red. La escritura podría completarse posteriormente; no borres ni repitas la carga sin verificar.':firebaseErrorText(e)};
     persistLocal();
     renderLaarSyncState();
     renderPasteStates();
-    toast('Firebase NO guardó la actualización. Revisa el aviso rojo en LAAR BASE.');
+    toast(e?.code==='sync-timeout'?'La confirmación sigue pendiente. Conserva la base.':'No se confirmó toda la actualización. Revisa el aviso de LAAR BASE.');
   }
 }
 
@@ -2744,9 +2760,9 @@ async function ensureCloudGuides(guides){
   // Targeted lookups preserve cross-month import matching without reading all historical orders.
   for(let i=0;i<missing.length;i+=30){
     const group=missing.slice(i,i+30);
-    adopt(await firestore.collection('pedidos').where(firebase.firestore.FieldPath.documentId(),'in',group).get());
+    adopt(await laarServerWait(firestore.collection('pedidos').where(firebase.firestore.FieldPath.documentId(),'in',group).get({source:'server'}),25000,'Consulta de guías LAAR'));
     const unresolved=group.filter(g=>!buildGuideIndex().has(g));
-    if(unresolved.length)adopt(await firestore.collection('pedidos').where('guia','in',unresolved).get());
+    if(unresolved.length)adopt(await laarServerWait(firestore.collection('pedidos').where('guia','in',unresolved).get({source:'server'}),25000,'Cruce de guías LAAR'));
   }
 }
 function archiveConfigValue(type,value){db.configArchive=db.configArchive||[];db.configArchive.push({type,value,at:new Date().toISOString()});}
